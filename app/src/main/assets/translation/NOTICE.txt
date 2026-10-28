@@ -1,0 +1,35 @@
+Bundled offline English <-> Russian machine translation
+
+Models: OPUS-MT, developed by the Language Technology Research Group,
+University of Helsinki (Helsinki-NLP).
+Authors/citation: Jorg Tiedemann and Santhosh Thottingal (2020),
+OPUS-MT -- Building open translation services for the World, EAMT 2020.
+
+English -> Russian:
+  https://huggingface.co/Helsinki-NLP/opus-mt-en-ru
+  License: Apache License 2.0 (licenses/Apache-2.0.txt)
+  ONNX conversion and quantization: Xenova
+  https://huggingface.co/Xenova/opus-mt-en-ru
+  Revision: e050376e960175e8ddc5cff85025dc8436cddd68
+
+Russian -> English:
+  https://huggingface.co/Helsinki-NLP/opus-mt-ru-en
+  License: Creative Commons Attribution 4.0 International
+  (licenses/CC-BY-4.0.txt)
+  ONNX conversion and quantization: Xenova
+  https://huggingface.co/Xenova/opus-mt-ru-en
+  Revision: afe8c6c738ec81b6d033fd8f44f9678a639a7c67
+
+Changes/usage in this application: existing quantized ONNX encoder/decoder
+weights are packaged unchanged, verified against published LFS SHA-256 values.
+The application uses its own Kotlin unigram tokenizer with NFKC normalization,
+greedy decoding (not upstream beam search), and short-input/output limits.
+Translation quality may differ from the original implementation. No endorsement
+by the University of Helsinki, Xenova, or Microsoft is implied.
+
+Runtime: Microsoft ONNX Runtime 1.23.2, MIT License.
+https://github.com/microsoft/onnxruntime/tree/v1.23.2
+See licenses/ONNX-Runtime-MIT.txt.
+
+These models can produce incorrect or biased translations. Check suggestions
+before saving. Translations are generated locally, without a network service.

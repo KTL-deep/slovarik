@@ -1,0 +1,59 @@
+{
+  "publisher": "Helsinki-NLP / University of Helsinki; ONNX conversion by Xenova",
+  "models": {
+    "en-ru": {
+      "revision": "e050376e960175e8ddc5cff85025dc8436cddd68",
+      "encoder": "97f28d8295d231b7da721ded06fa8c034787df2122cd8f85b904abdc4d15bd53",
+      "decoder": "7e4e602c31130176b086cd4bf31d6d08d44a6a367617e910870e0ea3e5408574",
+      "license": "Apache-2.0"
+    },
+    "ru-en": {
+      "revision": "afe8c6c738ec81b6d033fd8f44f9678a639a7c67",
+      "encoder": "c10df0466540534bb70c4402d539c349b8bfa9968184cad89f51408cf13e7eb7",
+      "decoder": "d880abf58612013815554ef55c98d0f28b68190b2cb6f65c39d6e834f51dda8c",
+      "license": "CC-BY-4.0"
+    }
+  },
+  "files": [
+    {
+      "path": "en-ru/encoder_model_quantized.onnx",
+      "sha256": "97f28d8295d231b7da721ded06fa8c034787df2122cd8f85b904abdc4d15bd53",
+      "bytes": 51628446
+    },
+    {
+      "path": "en-ru/decoder_model_quantized.onnx",
+      "sha256": "7e4e602c31130176b086cd4bf31d6d08d44a6a367617e910870e0ea3e5408574",
+      "bytes": 58560874
+    },
+    {
+      "path": "en-ru/tokenizer.json",
+      "sha256": "981cd3d9fef6bb4dda8082afda716b65deb6717cb3ef35ac0b57002c09dec2bb",
+      "bytes": 7205388
+    },
+    {
+      "path": "en-ru/config.json",
+      "sha256": "db16bf0ea7bac239273214c3b9ab44577884227371a9a25e0191b7baf8d6f167",
+      "bytes": 1376
+    },
+    {
+      "path": "ru-en/encoder_model_quantized.onnx",
+      "sha256": "c10df0466540534bb70c4402d539c349b8bfa9968184cad89f51408cf13e7eb7",
+      "bytes": 51628446
+    },
+    {
+      "path": "ru-en/decoder_model_quantized.onnx",
+      "sha256": "d880abf58612013815554ef55c98d0f28b68190b2cb6f65c39d6e834f51dda8c",
+      "bytes": 58560874
+    },
+    {
+      "path": "ru-en/tokenizer.json",
+      "sha256": "981cd3d9fef6bb4dda8082afda716b65deb6717cb3ef35ac0b57002c09dec2bb",
+      "bytes": 7205388
+    },
+    {
+      "path": "ru-en/config.json",
+      "sha256": "60dc7d0906dbe42a1d740cdd7e84ce1534685b81fbe16005a0301adac69086ce",
+      "bytes": 1376
+    }
+  ]
+}
