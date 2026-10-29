@@ -11,11 +11,32 @@ import java.nio.LongBuffer
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 
+/** Pick the installed EN↔RU direction from the script of the entered text.
+ * Latin text is translated to Russian and Cyrillic text to English, so the
+ * direction follows the input rather than the configured pair. Mixed input
+ * follows the majority script and ties fall back to the configured source.
+ */
+internal fun translationDirection(text: String, source: String, target: String): Pair<String, String>? {
+    val letters = text.filter { it.isLetter() }
+    if (letters.isEmpty()) return null
+    val cyrillic = letters.count { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.CYRILLIC }
+    val latin = letters.count { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.LATIN }
+    val direction = when {
+        cyrillic > latin -> "ru" to "en"
+        latin > cyrillic -> "en" to "ru"
+        cyrillic + latin == 0 -> return null
+        source == "ru" || (source != "en" && target == "en") -> "ru" to "en"
+        else -> "en" to "ru"
+    }
+    return direction.takeIf { BundledTranslator.supports(it.first, it.second) }
+}
+
 /** Offline OPUS-MT inference. Both directions are installed inside the APK.
  * One direction is resident at a time; all native tensors/results are closed per request.
  * Call translate on a background dispatcher, never on the Android UI thread.
  */
 internal class BundledTranslator(context: Context) : Closeable {
+    private val appContext = context.applicationContext
     private val assets = context.applicationContext.assets
     private val environment = OrtEnvironment.getEnvironment()
     private var loaded: Model? = null
@@ -68,7 +89,8 @@ internal class BundledTranslator(context: Context) : Closeable {
 
     @Synchronized
     fun translate(text: String, source: String, target: String): String {
-        require(supports(source, target)) { "Встроенный перевод поддерживает английский ↔ русский" }
+        val localized = InterfaceLanguage.wrap(appContext)
+        require(supports(source, target)) { localized.getString(R.string.translation_languages) }
         val model = load("$source-$target")
         val ids = model.tokenizer.encode(text)
         val shape = longArrayOf(1, ids.size.toLong())
@@ -80,7 +102,7 @@ internal class BundledTranslator(context: Context) : Closeable {
                     output += model.startId
                     var finished = false
                     repeat(48) {
-                        if (Thread.currentThread().isInterrupted) throw InterruptedException("Перевод отменён")
+                        if (Thread.currentThread().isInterrupted) throw InterruptedException(localized.getString(R.string.translation_cancelled))
                         val decoderIds = output.toLongArray()
                         OnnxTensor.createTensor(environment, LongBuffer.wrap(decoderIds), longArrayOf(1, decoderIds.size.toLong())).use { tokens ->
                             model.decoder.run(mapOf("input_ids" to tokens, "encoder_hidden_states" to hidden,
@@ -97,10 +119,10 @@ internal class BundledTranslator(context: Context) : Closeable {
                             }
                         }
                         if (finished) return model.tokenizer.decode(output.drop(1)).also {
-                            check(it.isNotBlank()) { "Не удалось подобрать перевод. Попробуйте другую форму слова." }
+                            check(it.isNotBlank()) { localized.getString(R.string.translation_empty) }
                         }
                     }
-                    error("Слишком длинный результат. Попробуйте более короткую фразу.")
+                    error(localized.getString(R.string.translation_too_long))
                 }
             }
         }

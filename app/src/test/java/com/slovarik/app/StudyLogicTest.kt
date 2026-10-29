@@ -21,9 +21,24 @@ class StudyLogicTest {
         val previous = Review(8, 120, 1.3, 0)
         val failed = schedule(previous, 1, 123)
         assertEquals(0, failed.repetitions)
-        assertEquals(1, failed.intervalDays)
+        assertEquals(0, failed.intervalDays)
+        assertEquals(1, failed.learningStep)
         assertEquals(1.3, failed.ease, 0.00001)
-        assertEquals(123 + day, failed.due)
+        assertEquals(123 + 600_000L, failed.due)
+    }
+
+    @Test fun learningStepsRequireASecondAnswerBeforeGraduation() {
+        val failed = schedule(Review(), 2, 100)
+        val early = schedule(failed, 4, 101)
+        assertEquals(2, early.learningStep)
+        assertEquals(0, early.repetitions)
+        assertEquals(0, early.intervalDays)
+        assertEquals(600_101L, early.due)
+        val graduated = schedule(early, 4, early.due)
+        assertEquals(Review(1, 1, graduated.ease, early.due + day), graduated)
+        val overdue = schedule(failed, 4, failed.due)
+        assertEquals(1, overdue.repetitions)
+        assertEquals(0, overdue.learningStep)
     }
 
     @Test(expected = IllegalArgumentException::class) fun invalidGradeRejected() { schedule(Review(), 6, 0) }

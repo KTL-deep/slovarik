@@ -1,6 +1,8 @@
 package com.slovarik.app
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -21,6 +23,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
@@ -32,13 +35,21 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
 
-private data class RatingDirection(val grade: Int, val label: String, val color: Color)
+private data class RatingDirection(val grade: Int, val color: Color)
+
+internal fun swipeRatingColor(grade: Int): Color = when (grade) {
+    5 -> Color(0xFF98DDB5) // Left: easy / green.
+    3 -> Color(0xFFFFC98D) // Down: hard / orange.
+    1 -> Color(0xFFFF858C) // Right: again / red.
+    4 -> Color(0xFFA5D3FF) // Up: good / blue.
+    else -> error("Unsupported swipe rating")
+}
 
 private fun direction(offset: Offset): RatingDirection = when (swipeGrade(offset.x, offset.y)) {
-    5 -> RatingDirection(5, "Легко", Mint)
-    1 -> RatingDirection(1, "Снова", Coral)
-    4 -> RatingDirection(4, "Хорошо", Mint)
-    else -> RatingDirection(3, "Трудно", Coral)
+    5 -> RatingDirection(5, swipeRatingColor(5))
+    1 -> RatingDirection(1, swipeRatingColor(1))
+    4 -> RatingDirection(4, swipeRatingColor(4))
+    else -> RatingDirection(3, swipeRatingColor(3))
 }
 
 /** Gestures grade only on release beyond the threshold; cancellation always springs back. */
@@ -63,15 +74,30 @@ internal fun SwipeReview(
     }
     val rating = direction(offset)
     val intensity = (max(abs(offset.x), abs(offset.y)) / threshold).coerceIn(0f, 1f)
-    val label = if (practice) "Дальше · без оценки" else rating.label
-    val tint = if (enabled && intensity > 0f) lerp(baseColor, if (practice) Mint else rating.color, intensity * .72f) else baseColor
+    val ratingLabel = stringResource(when (rating.grade) {
+        5 -> R.string.swipe_easy
+        1 -> R.string.swipe_again
+        4 -> R.string.swipe_good
+        else -> R.string.swipe_hard
+    })
+    val label = if (practice) stringResource(R.string.swipe_practice_rating, ratingLabel) else ratingLabel
+    val leftAction = stringResource(if (practice) R.string.study_next_word else R.string.swipe_left_easy)
+    val downAction = stringResource(if (practice) R.string.swipe_down_next else R.string.swipe_down_hard)
+    val rightAction = stringResource(if (practice) R.string.swipe_right_next else R.string.swipe_right_again)
+    val upAction = stringResource(if (practice) R.string.swipe_up_next else R.string.swipe_up_good)
+    // Full, distinct direction color at the release threshold, also in free practice.
+    // Short retargetable interpolation avoids abrupt jumps when the drag changes axis.
+    val tint by animateColorAsState(
+        targetValue = if (enabled) lerp(baseColor, rating.color, intensity) else baseColor,
+        animationSpec = tween(100), label = "swipe rating background"
+    )
     val gesture = if (enabled) Modifier
         .semantics {
             customActions = listOf(
-                CustomAccessibilityAction(if (practice) "Следующее слово" else "Влево: Легко") { onCommit(5); true },
-                CustomAccessibilityAction(if (practice) "Вниз: следующее слово" else "Вниз: Трудно") { onCommit(3); true },
-                CustomAccessibilityAction(if (practice) "Вправо: следующее слово" else "Вправо: Снова") { onCommit(1); true },
-                CustomAccessibilityAction(if (practice) "Вверх: следующее слово" else "Вверх: Хорошо") { onCommit(4); true },
+                CustomAccessibilityAction(leftAction) { onCommit(5); true },
+                CustomAccessibilityAction(downAction) { onCommit(3); true },
+                CustomAccessibilityAction(rightAction) { onCommit(1); true },
+                CustomAccessibilityAction(upAction) { onCommit(4); true },
             )
         }
         .pointerInput(enabled, practice) {

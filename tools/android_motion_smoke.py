@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -44,8 +45,12 @@ def main() -> None:
             subprocess.run([sys.executable, str(suite), "--serial", args.serial], check=True)
             destination = output / label
             destination.mkdir(exist_ok=True)
-            for screenshot in source.glob("0[1-8]-*.png"):
-                shutil.copy2(screenshot, destination / screenshot.name)
+            for old in destination.glob("*.png"):
+                if re.fullmatch(r"\d+-.*\.png", old.name):
+                    old.unlink()
+            for screenshot in source.glob("*.png"):
+                if re.fullmatch(r"\d+-.*\.png", screenshot.name):
+                    shutil.copy2(screenshot, destination / screenshot.name)
             print(f"PASS: all read-only UI flows with system motion {label}", flush=True)
     finally:
         failures = []

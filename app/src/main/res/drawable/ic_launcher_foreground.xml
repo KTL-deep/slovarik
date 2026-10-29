@@ -1,7 +1,9 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#B7D6C5" android:pathData="M31,28 L73,33 Q79,34 78,40 L73,78 Q72,83 66,82 L27,77 Q22,76 23,70 L27,34 Q28,28 31,28 Z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M36,29 L77,29 Q82,29 82,35 L82,72 Q82,78 77,78 L36,78 Q30,78 30,72 L30,35 Q30,29 36,29 Z" />
-    <path android:fillColor="#276851" android:pathData="M40,41 L70,41 L70,46 L40,46 Z M40,51 L64,51 L64,55 L40,55 Z" />
-    <path android:fillColor="#B0733D" android:pathData="M49,65 L54,70 L65,59 L68,62 L54,76 L46,68 Z" />
+    <!-- A compact word mosaic, sharing the app's lavender / mint / lemon palette. -->
+    <path android:fillColor="#B399FA" android:pathData="M32,29 H58 Q63,29 63,34 V49 Q63,54 58,54 H32 Q27,54 27,49 V34 Q27,29 32,29 Z" />
+    <path android:fillColor="#FF6269" android:pathData="M71,29 H76 Q81,29 81,34 V49 Q81,54 76,54 H71 Q66,54 66,49 V34 Q66,29 71,29 Z" />
+    <path android:fillColor="#C3D7C2" android:pathData="M32,57 H43 Q48,57 48,62 V74 Q48,79 43,79 H32 Q27,79 27,74 V62 Q27,57 32,57 Z" />
+    <path android:fillColor="#EFFF9C" android:pathData="M56,57 H76 Q81,57 81,62 V74 Q81,79 76,79 H56 Q51,79 51,74 V62 Q51,57 56,57 Z" />
+    <path android:fillColor="#111111" android:pathData="M35,37 H55 V40 H35 Z M35,44 H48 V47 H35 Z M59,64 L64,69 L73,61 L76,64 L64,75 L56,67 Z" />
 </vector>

@@ -1,0 +1,20 @@
+<resources>
+    <string name="sync_title">Account and sync</string>
+    <string name="sync_description">Your saved profile on your devices: vocabulary, progress, records and settings. Learning works offline.</string>
+    <string name="sync_not_configured">Firebase is not configured for this build yet. Your local data remains available as usual.</string>
+    <string name="sync_signed_out">Sign-in is optional. Without an account, data stays on this device.</string>
+    <string name="sync_ready">Sync is enabled</string>
+    <string name="sync_working">Syncing…</string>
+    <string name="sync_error">Sync did not finish. Changes are saved on this device. Check your connection and Firebase configuration, then retry.</string>
+    <string name="sync_wrong_account">This vocabulary is linked to another Google account. Sign in to the original account: data will not be sent to another user.</string>
+    <string name="sync_sign_in">Sign in with Google</string>
+    <string name="sync_now">Sync now</string>
+    <string name="sync_sign_out">Sign out</string>
+    <string name="sync_last_time">Last synced: %1$s</string>
+    <string name="sync_consent_title">Connect Google?</string>
+    <string name="sync_consent_message">Your saved profile will be sent to Firebase: folders, decks, cards, trash, review schedule and history, the last review undo, Match records, languages, random direction and reminder preferences. It will be merged with the selected account on other devices. Independently created cards remain separate.\n\nConcurrent changes are resolved by version; Match keeps the best time. Android permissions and installed voices are not transferred. Learning works offline.\n\nThis profile will be linked to one account: use the same account after signing out. Replacing a linked vocabulary from a JSON backup is disabled.</string>
+    <string name="sync_consent_accept">Continue</string>
+    <string name="sync_sign_out_title">Sign out of Google?</string>
+    <string name="sync_sign_out_message">Your vocabulary, progress, records and settings will stay on this device. New changes will be stored locally until you sign in to the same account again. Data already uploaded will remain in the cloud.</string>
+    <string name="sync_restore_blocked">JSON restore is disabled for a vocabulary linked to Google to protect cloud data from accidental replacement.</string>
+</resources>

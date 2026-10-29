@@ -1,0 +1,6 @@
+<resources>
+    <string name="reminder_channel">Повторение слов</string>
+    <string name="reminder_title">Пора повторить слова</string>
+    <string name="reminder_count">Карточек к повторению: %1$d</string>
+    <string name="app_name">Словарик</string>
+</resources>

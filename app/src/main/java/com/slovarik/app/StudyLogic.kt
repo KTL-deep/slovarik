@@ -3,15 +3,17 @@ package com.slovarik.app
 import kotlin.math.max
 import kotlin.math.roundToLong
 
-data class Review(val repetitions: Int = 0, val intervalDays: Int = 0, val ease: Double = 2.5, val due: Long = 0L)
+data class Review(val repetitions: Int = 0, val intervalDays: Int = 0, val ease: Double = 2.5, val due: Long = 0L, val learningStep: Int = 0)
 
 /** SM-2 with grades 0..5. Grades <3 reset the learning streak. */
 fun schedule(review: Review, grade: Int, now: Long): Review {
     require(grade in 0..5)
     val ease = max(1.3, review.ease + (0.1 - (5 - grade) * (0.08 + (5 - grade) * 0.02)))
-    val reps = if (grade < 3) 0 else review.repetitions + 1
+    if (grade < 3) return Review(0, 0, ease, now + 600_000L, 1)
+    if (review.learningStep == 1 && now < review.due) return Review(0, 0, ease, now + 600_000L, 2)
+    if (review.learningStep != 0) return Review(1, 1, ease, now + 86_400_000L)
+    val reps = review.repetitions + 1
     val interval = when {
-        grade < 3 -> 1
         reps == 1 -> 1
         reps == 2 -> 6
         else -> max(1, (review.intervalDays * ease).roundToLong().toInt())

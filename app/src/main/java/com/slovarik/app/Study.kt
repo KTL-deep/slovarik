@@ -10,8 +10,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,28 +19,41 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.random.Random
 
 @Composable
-fun Study(store: Store, deck: Deck, language: String, speak: (String, String) -> Unit, update: () -> Unit, modifier: Modifier = Modifier, practice: Boolean = false, active: Boolean = true) {
+fun Study(store: Store, deck: Deck, language: String, speak: (String, String) -> Unit, update: () -> Unit, modifier: Modifier = Modifier, practice: Boolean = false, active: Boolean = true, initialCardId: Long? = null, initialMode: String = "Карточки", randomDirection: Boolean = false) {
+    val context = LocalContext.current
     val all = remember(deck.id) { store.cards(deck.id) }
-    val studyCards = remember(deck.id, practice) {
-        (if (practice) all else all.filter { it.review.due <= System.currentTimeMillis() }).shuffled()
+    val studyCards = remember(deck.id, practice, initialCardId) {
+        val eligible = (if (practice) all else all.filter { it.review.due <= System.currentTimeMillis() || it.id == initialCardId }).shuffled()
+        // A card returned by global Undo must be shown first, not lost in the shuffled queue.
+        if (!practice && initialCardId != null) eligible.sortedBy { if (it.id == initialCardId) 0 else 1 } else eligible
     }
-    var index by remember(deck.id, practice) { mutableIntStateOf(0) }
-    var mode by remember(deck.id, practice) { mutableStateOf("Карточки") }
-    val currentCard = studyCards.getOrNull(index)
-    var revealed by remember(currentCard?.id, mode) { mutableStateOf(false) }
+    var session by remember(deck.id, practice, initialCardId) { mutableStateOf(LearningSession.start(studyCards)) }
+    var directionSeed by remember(deck.id, practice, initialCardId) { mutableLongStateOf(Random.nextLong()) }
+    var lastWrite by remember(deck.id, practice, initialCardId) { mutableStateOf<Pair<Long, LearningSession>?>(null) }
+    var undoing by remember(deck.id, practice, initialCardId) { mutableStateOf(false) }
+    var sessionError by remember(deck.id, practice, initialCardId) { mutableStateOf<String?>(null) }
+    val mode = remember(deck.id, practice, initialMode) {
+        initialMode.takeIf { it in listOf("Карточки", "Тест", "Ввод") || (practice && it == "Пары") } ?: "Карточки"
+    }
+    val currentItem = session.current
+    val currentCard = currentItem?.card
+    val occurrence = currentItem?.occurrence
+    var revealed by remember(occurrence, mode) { mutableStateOf(false) }
     // This guard changes synchronously with the write, before a second tap can be dispatched.
-    var answered by remember(currentCard?.id, mode) { mutableStateOf(false) }
-    var wrongAttempts by remember(currentCard?.id, mode) { mutableIntStateOf(0) }
-    val nudge = remember(currentCard?.id, mode) { Animatable(0f) }
+    var answered by remember(occurrence, mode) { mutableStateOf(false) }
+    var wrongAttempts by remember(occurrence, mode) { mutableIntStateOf(0) }
+    val nudge = remember(occurrence, mode) { Animatable(0f) }
     LaunchedEffect(wrongAttempts) {
         if (wrongAttempts > 0) {
             nudge.snapTo(0f)
@@ -49,95 +62,146 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
         }
     }
     val keyboard = LocalSoftwareKeyboardController.current
-    Column(modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState())) {
-        Text(if (practice) "Тренировка" else "Повторение", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-        Text(if (practice) "Без расписания и статистики" else "SM-2 · с сохранением прогресса", color = Muted)
-        if (mode != "Пары") Text("${minOf(index + 1, studyCards.size)} / ${studyCards.size}", color = Muted)
-        Spacer(Modifier.height(12.dp))
-        // In SM-2 the mode is locked once an answer is visible, so a wrong answer cannot be rerated.
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            (listOf("Карточки", "Тест", "Ввод") + if (practice) listOf("Пары") else emptyList()).forEach { option ->
-                FilterChip(selected = mode == option, onClick = { keyboard?.hide(); mode = option }, enabled = practice || !revealed,
-                    label = { Text(option) })
+    val undoEvent = if (!practice) store.lastReviewUndo()?.takeIf { it.card.deckId == deck.id } else null
+    fun undo() {
+        if (!active || undoing) return
+        val latest = undoEvent ?: return
+        undoing = true
+        try {
+            val restored = store.undoLastReview(latest.eventId)
+            if (restored != null) {
+                session = if (lastWrite?.first == latest.eventId) session.restore(lastWrite!!.second, restored)
+                    else session.prepend(restored)
+                lastWrite = null
+                sessionError = null
+            } else {
+                sessionError = context.getString(R.string.study_undo_unavailable)
             }
-        }
-        Spacer(Modifier.height(18.dp))
+            update()
+        } catch (error: Exception) {
+            sessionError = context.getString(R.string.study_undo_error, error.message)
+        } finally { undoing = false }
+    }
+    Column(modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState())) {
+        Text(stringResource(if (practice) R.string.study_practice else R.string.study_review), fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text(stringResource(if (practice) R.string.study_practice_subtitle else R.string.study_review_subtitle), color = Muted)
+        if (mode != "Пары") Text(stringResource(R.string.study_progress, minOf(session.index + 1, session.queue.size), session.queue.size), color = Muted)
+        if (!practice) Text(stringResource(R.string.study_retry_hint), color = Muted, fontSize = 12.sp)
+        if (undoEvent != null) TextButton(onClick = ::undo, enabled = active && !undoing) { Text(stringResource(R.string.study_undo)) }
+        sessionError?.let { Text(it, color = Coral, fontSize = 13.sp) }
+        Spacer(Modifier.height(12.dp))
         if (mode == "Пары" && practice) {
-            MatchGame(all)
+            MatchGame(all, deckId = deck.id, store = store)
             return@Column
         }
-        if (index >= studyCards.size) {
+        if (session.current == null) {
             Card(colors = CardDefaults.cardColors(containerColor = Mint, contentColor = Night), shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {
-                Text(if (practice) "Все слова пройдены. Можно начать заново или попробовать пары. Прогресс повторения не изменился."
-                    else "Готово на сегодня! Возвращайтесь за следующими словами.", modifier = Modifier.padding(28.dp), fontSize = 20.sp)
+                Text(stringResource(if (practice) R.string.study_practice_done else R.string.study_review_done), modifier = Modifier.padding(28.dp), fontSize = 20.sp)
             }
-            if (practice) TextButton(onClick = { index = 0 }) { Text("Пройти ещё раз") }
+            if (practice) TextButton(onClick = {
+                directionSeed = Random.nextLong()
+                session = LearningSession.start(all, session.nextOccurrence)
+            }) { Text(stringResource(R.string.study_again)) }
             return@Column
         }
         val card = currentCard ?: return@Column
-        var typed by remember(card.id) { mutableStateOf("") }
-        var selection by remember(card.id) { mutableStateOf<String?>(null) }
-        val options = remember(card.id) {
+        // In random mode the prompt is the translation for roughly half of the occurrences.
+        val promptIsWord = promptIsWordFor(occurrence ?: 0L, randomDirection, directionSeed)
+        val answerText = if (promptIsWord) card.translation else card.word
+        var typed by remember(occurrence, mode) { mutableStateOf("") }
+        var selection by remember(occurrence, mode) { mutableStateOf<String?>(null) }
+        val options = remember(occurrence, promptIsWord) {
             (all.asSequence().filter { it.id != card.id }
-                .map { it.translation }.filterNot { it.equals(card.translation, ignoreCase = true) }
-                .distinctBy { it.trim().lowercase() }.toList().shuffled().take(3) + card.translation).shuffled()
+                .map { if (promptIsWord) it.translation else it.word }
+                .filterNot { it.equals(answerText, ignoreCase = true) }
+                .distinctBy { it.trim().lowercase() }.toList().shuffled().take(3) + answerText).shuffled()
         }
-        val correct = (mode == "Тест" && selection == card.translation) ||
-            (mode == "Ввод" && typed.trim().equals(card.translation.trim(), ignoreCase = true))
+        val correct = (mode == "Тест" && selection == answerText) ||
+            (mode == "Ввод" && typed.trim().equals(answerText.trim(), ignoreCase = true))
         fun advance(grade: Int) {
-            if (!active || !revealed || answered) return
+            if (!active || !revealed || answered || session.current?.occurrence != occurrence) return
             answered = true
-            if (!practice) {
-                val wrong = (mode == "Тест" && selection != card.translation) ||
-                    (mode == "Ввод" && !typed.trim().equals(card.translation.trim(), ignoreCase = true))
-                store.review(card, if (wrong) 1 else grade)
+            sessionError = null
+            try {
+                if (practice) session = session.copy(index = session.index + 1)
+                else {
+                    val wrong = (mode == "Тест" && selection != answerText) ||
+                        (mode == "Ввод" && !typed.trim().equals(answerText.trim(), ignoreCase = true))
+                    val effectiveGrade = if (wrong) 1 else grade
+                    val snapshot = session
+                    val result = store.review(card, effectiveGrade)
+                    lastWrite = result.eventId to snapshot
+                    session = session.advance(result.card, effectiveGrade < 3)
+                    update()
+                }
+            } catch (error: Exception) {
+                answered = false
+                sessionError = context.getString(R.string.study_save_error, error.message)
             }
-            index++
-            if (!practice) update()
         }
-        AnimatedContent(targetState = card to revealed, contentKey = { it.first.id }, modifier = Modifier.fillMaxWidth().graphicsLayer { translationX = nudge.value * density },
+        AnimatedContent(targetState = currentItem to revealed, contentKey = { it.first?.occurrence }, modifier = Modifier.fillMaxWidth().graphicsLayer { translationX = nudge.value * density },
             transitionSpec = {
                 (slideInHorizontally(tween(180, easing = FastOutSlowInEasing)) { 20 } + fadeIn(tween(160)))
                     .togetherWith(slideOutHorizontally(tween(160)) { -20 } + fadeOut(tween(140)))
-            }, label = "next word") { (item, itemRevealed) ->
-        val isCurrent = active && item.id == currentCard?.id
+            }, label = "next word") { (target, itemRevealed) ->
+        val item = target?.card ?: return@AnimatedContent
+        val isCurrent = active && target.occurrence == occurrence
+        val itemPromptIsWord = promptIsWordFor(target.occurrence, randomDirection, directionSeed)
+        val itemPrompt = if (itemPromptIsWord) item.word else item.translation
+        val itemAnswer = if (itemPromptIsWord) item.translation else item.word
         // Outgoing items are read-only snapshots: never expose another grade or reveal action.
         val flip by animateFloatAsState(if (mode == "Карточки" && itemRevealed) 180f else 0f,
-            tween(300, easing = FastOutSlowInEasing), label = "flashcard flip")
+            tween(380, easing = FastOutSlowInEasing), label = "flashcard flip")
+        val answerFace = mode == "Карточки" && flip > 90f
+        val flipLabel = stringResource(R.string.study_flip)
         SwipeReview(enabled = isCurrent && itemRevealed && !answered, practice = practice,
             baseColor = if (isCurrent && itemRevealed && correct) Mint else Lavender,
             onCommit = ::advance) { swipeModifier, tint ->
         Card(colors = CardDefaults.cardColors(containerColor = tint, contentColor = Night), shape = RoundedCornerShape(28.dp),
-            modifier = swipeModifier.fillMaxWidth().graphicsLayer {
+            modifier = swipeModifier.fillMaxWidth()
+                .then(if (mode == "Карточки" && isCurrent && !answered) Modifier.clickable(onClickLabel = flipLabel) { revealed = !revealed } else Modifier)
+                .graphicsLayer {
                 if (mode == "Карточки") rotationY = flip
                 cameraDistance = 12f * density * 100f
             }) {
             // Compose only the visible face: the hidden face cannot be focused by accessibility.
-            Column(Modifier.fillMaxWidth().then(if (mode == "Карточки") Modifier.height(280.dp) else Modifier.heightIn(min = 240.dp)).graphicsLayer { if (mode == "Карточки" && flip > 90f) rotationY = 180f }.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(if (mode == "Карточки" && flip > 90f) "ПЕРЕВОД" else "ПЕРЕВЕДИТЕ", color = Night, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Box(Modifier.fillMaxWidth().weight(1f).heightIn(min = 110.dp), contentAlignment = Alignment.Center) {
-                    Text(if (mode == "Карточки" && flip > 90f) item.translation else item.word,
-                        fontSize = if (mode == "Карточки" && flip > 90f) 26.sp else 32.sp,
-                        fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Column(Modifier.fillMaxWidth().then(if (mode == "Карточки") Modifier.height(280.dp) else Modifier).graphicsLayer { if (answerFace) rotationY = 180f }.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.fillMaxWidth().height(if (mode == "Карточки") 48.dp else 24.dp), contentAlignment = Alignment.Center) {
+                     Text(stringResource(when {
+                         mode != "Карточки" -> R.string.study_translate
+                         answerFace -> if (itemPromptIsWord) R.string.study_translation else R.string.study_word
+                         else -> R.string.study_translate
+                     }), color = Night, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                // No weight here: a weighted box collapses inside the parent's vertical scroll.
+                if (mode == "Карточки") {
+                    Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Text(if (answerFace) itemAnswer else itemPrompt,
+                            fontSize = if (answerFace) 26.sp else 32.sp,
+                            fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                    }
+                } else {
+                    Box(Modifier.fillMaxWidth().heightIn(min = 96.dp).padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Text(itemPrompt, fontSize = 32.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                    }
                 }
                 when (mode) {
                     "Карточки" -> {
-                        if (!itemRevealed && isCurrent) Button(onClick = { if (!revealed) revealed = true }, colors = ButtonDefaults.buttonColors(containerColor = Night, contentColor = Color.White)) { Text("Показать перевод") }
-                        else if (isCurrent) TextButton(onClick = { speak(item.word, language) }, colors = ButtonDefaults.textButtonColors(contentColor = Night)) { AppIcon("sound", Modifier.size(18.dp), Night); Spacer(Modifier.width(7.dp)); Text("Произнести") }
+                        if (itemRevealed && isCurrent) TextButton(onClick = { speak(item.word, language) }, modifier = Modifier.height(48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Night)) { AppIcon("sound", Modifier.size(18.dp), Night); Spacer(Modifier.width(7.dp)); Text(stringResource(R.string.study_speak)) }
                         else Spacer(Modifier.height(48.dp))
                     }
                     "Тест" -> {
-                        if (isCurrent) options.forEach { answer ->
-                            OutlinedButton(onClick = { if (!revealed) { selection = answer; revealed = true; if (answer != item.translation) wrongAttempts++ } }, enabled = !revealed, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Night, disabledContentColor = Night.copy(alpha = .5f))) { Text(answer) }
+                        if (isCurrent && !itemRevealed) options.forEach { answer ->
+                            OutlinedButton(onClick = { if (!revealed) { selection = answer; revealed = true; if (answer != itemAnswer) wrongAttempts++ } }, enabled = !revealed, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Night, disabledContentColor = Night.copy(alpha = .5f))) { Text(answer) }
                         }
-                        if (revealed || !isCurrent) Text(if (isCurrent && selection == item.translation) "Верно!" else "Правильно: ${item.translation}", color = Night)
+                        if (itemRevealed || !isCurrent) Text(if (isCurrent && selection == itemAnswer) stringResource(R.string.study_correct) else stringResource(R.string.study_answer, itemAnswer), color = Night)
                     }
                     else -> {
                         if (isCurrent) {
-                            OutlinedTextField(typed, { typed = it }, label = { Text("Ваш перевод") }, singleLine = true, enabled = !revealed, colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Night, unfocusedTextColor = Night, focusedLabelColor = Night, unfocusedLabelColor = Night, focusedBorderColor = Night, unfocusedBorderColor = Night))
-                            if (!revealed) TextButton(enabled = typed.isNotBlank(), onClick = { if (!revealed) { keyboard?.hide(); revealed = true; if (!typed.trim().equals(item.translation.trim(), ignoreCase = true)) wrongAttempts++ } }, colors = ButtonDefaults.textButtonColors(contentColor = Night)) { Text("Проверить") }
+                            OutlinedTextField(typed, { typed = it }, label = { Text(stringResource(R.string.study_your_translation)) }, singleLine = true, enabled = !itemRevealed, colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Night, unfocusedTextColor = Night, focusedLabelColor = Night, unfocusedLabelColor = Night, focusedBorderColor = Night, unfocusedBorderColor = Night))
+                            if (!itemRevealed) TextButton(enabled = typed.isNotBlank(), onClick = { if (!revealed) { keyboard?.hide(); revealed = true; if (!typed.trim().equals(itemAnswer.trim(), ignoreCase = true)) wrongAttempts++ } }, colors = ButtonDefaults.textButtonColors(contentColor = Night)) { Text(stringResource(R.string.study_check)) }
                         }
-                        if (revealed || !isCurrent) Text(if (isCurrent && typed.trim().equals(item.translation.trim(), ignoreCase = true)) "Верно!" else "Правильно: ${item.translation}", color = Night)
+                        if (itemRevealed || !isCurrent) Text(if (isCurrent && typed.trim().equals(itemAnswer.trim(), ignoreCase = true)) stringResource(R.string.study_correct) else stringResource(R.string.study_answer, itemAnswer), color = Night)
                     }
                 }
             }
@@ -147,14 +211,13 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
         if (revealed) {
             Spacer(Modifier.height(20.dp))
             if (practice) {
-                Button(onClick = { advance(4) }, enabled = active && !answered, modifier = Modifier.fillMaxWidth()) { Text("Следующее слово") }
+                Button(onClick = { advance(4) }, enabled = active && !answered, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.study_next_word)) }
             } else {
-                Text("Как хорошо вы вспомнили?", fontWeight = FontWeight.Bold)
-                Text("Ответ в тесте и вводе проверяется автоматически; ошибка не засчитывается как успех.", color = Muted, fontSize = 12.sp)
+                Text(stringResource(R.string.study_rate_prompt), fontWeight = FontWeight.Bold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    listOf(1 to "Снова", 3 to "Трудно", 4 to "Хорошо", 5 to "Легко").forEach { (grade, label) ->
+                    listOf(1 to R.string.swipe_again, 3 to R.string.swipe_hard, 4 to R.string.swipe_good, 5 to R.string.swipe_easy).forEach { (grade, label) ->
                         OutlinedButton(onClick = { advance(grade) }, enabled = active && !answered, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp)) {
-                            Text(label, fontSize = 11.sp, maxLines = 1)
+                            Text(stringResource(label), fontSize = 11.sp, maxLines = 1)
                         }
                     }
                 }
@@ -163,3 +226,7 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
         Spacer(Modifier.height(24.dp))
     }
 }
+
+/** Session-specific prompt side, stable for each occurrence (including outgoing content). */
+internal fun promptIsWordFor(occurrence: Long, randomDirection: Boolean, sessionSeed: Long): Boolean =
+    !randomDirection || Random(sessionSeed xor (occurrence * 1_000_003L + 17L)).nextBoolean()

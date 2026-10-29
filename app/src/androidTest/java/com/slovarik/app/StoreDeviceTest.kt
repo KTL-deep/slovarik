@@ -2,6 +2,7 @@ package com.slovarik.app
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import android.database.sqlite.SQLiteDatabase
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -76,6 +77,8 @@ class StoreDeviceTest {
         store.restore(backup)
         assertEquals(1, store.stats().reviews)
         assertEquals(1, store.stats().correct)
+        assertFalse(JSONObject(store.backup()).getJSONArray("events").getJSONObject(0).isNull("card"))
+        store.purgeTrash(TrashKind.CARD, store.trashItems().single().id)
         assertTrue(JSONObject(store.backup()).getJSONArray("events").getJSONObject(0).isNull("card"))
     }
 
@@ -106,5 +109,163 @@ class StoreDeviceTest {
             .getJSONObject(0).getJSONArray("cards").getJSONObject(0).put("interval", -5)
         assertThrows(Exception::class.java) { store.restore(bad.toString()) }
         assertEquals(before, store.backup())
+    }
+
+    @Test fun deletingDeckPreservesOtherFoldersAndReviewHistory() {
+        val card = seed()
+        store.review(card, 4)
+        val otherFolder = store.addFolder("Keep")
+        val otherDeck = store.addDeck(otherFolder, "Keep deck")
+        store.addCard(otherDeck, "house", "дом")
+        store.deleteDeck(card.deckId)
+        assertEquals("house", store.cards(otherDeck).single().word)
+        assertTrue(store.cards(card.deckId).isEmpty())
+        assertEquals(1, store.stats().reviews)
+        assertFalse(JSONObject(store.backup()).getJSONArray("events").getJSONObject(0).isNull("card"))
+        store.purgeTrash(TrashKind.DECK, card.deckId)
+        assertTrue(JSONObject(store.backup()).getJSONArray("events").getJSONObject(0).isNull("card"))
+    }
+
+    @Test fun deletingFolderCascadesOnlyItsOwnDecks() {
+        val card = seed()
+        store.review(card, 4)
+        val deletedFolder = store.folders().single().id
+        val keep = store.addFolder("Keep")
+        val keepDeck = store.addDeck(keep, "Keep deck")
+        store.addCard(keepDeck, "cat", "кот")
+        store.deleteFolder(deletedFolder)
+        assertEquals(keep, store.folders().single().id)
+        assertTrue(store.decks(deletedFolder).isEmpty())
+        assertEquals("cat", store.cards(keepDeck).single().word)
+        assertEquals(1, store.stats().reviews)
+    }
+
+    @Test fun migrationKeepsLegacyProgressAndHistory() {
+        store.close()
+        context.deleteDatabase(testDatabase)
+        SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(testDatabase), null).use { db ->
+            db.execSQL("CREATE TABLE folders(id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE decks(id INTEGER PRIMARY KEY, folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE, name TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE cards(id INTEGER PRIMARY KEY, deck_id INTEGER NOT NULL REFERENCES decks(id) ON DELETE CASCADE, word TEXT NOT NULL, translation TEXT NOT NULL, reps INTEGER NOT NULL DEFAULT 0, interval_days INTEGER NOT NULL DEFAULT 0, ease REAL NOT NULL DEFAULT 2.5, due INTEGER NOT NULL DEFAULT 0)")
+            db.execSQL("CREATE TABLE events(id INTEGER PRIMARY KEY, card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL, day INTEGER NOT NULL, correct INTEGER NOT NULL)")
+            db.execSQL("INSERT INTO folders VALUES(1,'Legacy')")
+            db.execSQL("INSERT INTO decks VALUES(1,1,'Old')")
+            db.execSQL("INSERT INTO cards VALUES(1,1,'word','translation',3,14,2.1,12345)")
+            db.execSQL("INSERT INTO events VALUES(1,1,5,1)")
+            db.version = 1
+        }
+        store = Store(context, testDatabase)
+        assertEquals(Review(3, 14, 2.1, 12345), store.getCard(1)!!.review)
+        assertEquals(1, store.stats().reviews)
+        assertEquals(1, store.dueCount())
+    }
+
+    @Test fun undoUsesLatestReceiptAndPreservesEditedText() {
+        val original = seed()
+        val first = store.review(original, 2)
+        assertEquals(1, first.card.review.learningStep)
+        store.updateCard(original.id, "edited", "changed")
+        assertEquals("edited", store.lastReviewUndo()!!.card.word)
+        assertNull(store.undoLastReview(first.eventId + 1))
+        assertEquals(1, store.stats().reviews)
+        val undone = store.undoLastReview(first.eventId)!!
+        assertEquals("edited", undone.word)
+        assertEquals(original.review, undone.review)
+        assertEquals(0, store.stats().reviews)
+        assertNull(store.lastReviewUndo())
+        val second = store.review(original, 4)
+        store.review(original, 5)
+        assertNull(store.undoLastReview(second.eventId))
+        assertEquals(2, store.stats().reviews)
+    }
+
+    @Test fun reviewReadsFreshProgressAndUndoSurvivesReopenButRejectsChangedProgress() {
+        val stale = seed()
+        val first = store.review(stale, 1)
+        val second = store.review(stale, 4)
+        assertEquals(2, second.card.review.learningStep)
+        assertEquals(0, second.card.review.repetitions)
+        store.close()
+        store = Store(context, testDatabase)
+        assertEquals(second.eventId, store.lastReviewUndo()!!.eventId)
+        assertEquals(first.card.review, store.undoLastReview(second.eventId)!!.review)
+        assertEquals(1, store.stats().reviews)
+        val third = store.review(stale, 4)
+        store.writableDatabase.execSQL("UPDATE cards SET ease=3.0 WHERE id=?", arrayOf(third.card.id))
+        assertNull(store.lastReviewUndo())
+        assertNull(store.undoLastReview(third.eventId))
+        assertEquals(2, store.stats().reviews)
+    }
+
+    @Test fun softDeleteNestedRestoreAndPurgePreserveHistoryUntilPurge() {
+        val card = seed()
+        val folder = store.folders().single().id
+        store.review(card, 4)
+        store.deleteCard(card.id)
+        store.deleteFolder(folder)
+        assertTrue(store.folders().isEmpty())
+        assertEquals(0, store.dueCount())
+        assertTrue(store.hasFolders())
+        assertEquals(listOf(TrashKind.FOLDER), store.trashItems().map { it.kind })
+        assertThrows(IllegalArgumentException::class.java) { store.addDeck(folder, "no") }
+        store.restoreTrash(TrashKind.FOLDER, folder)
+        assertNull(store.getCard(card.id))
+        assertEquals(TrashKind.CARD, store.trashItems().single().kind)
+        store.restoreTrash(TrashKind.CARD, card.id)
+        assertNotNull(store.getCard(card.id))
+        store.deleteDeck(card.deckId)
+        assertThrows(IllegalArgumentException::class.java) { store.addCard(card.deckId, "no", "no") }
+        assertFalse(JSONObject(store.backup()).getJSONArray("events").getJSONObject(0).isNull("card"))
+        store.purgeTrash(TrashKind.DECK, card.deckId)
+        assertTrue(JSONObject(store.backup()).getJSONArray("events").getJSONObject(0).isNull("card"))
+        assertEquals(1, store.stats().reviews)
+    }
+
+    @Test fun v1RestoreAndV2TrashedLearningRoundTrip() {
+        val card = seed()
+        val v1 = JSONObject(store.backup()).put("version", 1)
+        val folder = v1.getJSONArray("folders").getJSONObject(0)
+        folder.remove("deletedAt")
+        val deck = folder.getJSONArray("decks").getJSONObject(0)
+        deck.remove("deletedAt")
+        val oldCard = deck.getJSONArray("cards").getJSONObject(0)
+        oldCard.remove("deletedAt"); oldCard.remove("learningStep")
+        store.restore(v1.toString())
+        assertEquals(0, store.cards(store.decks(store.folders().single().id).single().id).single().review.learningStep)
+        val current = store.cards(store.decks(store.folders().single().id).single().id).single()
+        store.review(current, 1)
+        store.deleteCard(current.id)
+        val backup = store.backup()
+        store.restore(backup)
+        assertNull(store.lastReviewUndo())
+        val restored = store.trashItems().single()
+        store.restoreTrash(restored.kind, restored.id)
+        assertEquals(1, store.getCard(restored.id)!!.review.learningStep)
+        val bad = JSONObject(backup)
+        bad.getJSONArray("folders").getJSONObject(0).put("deletedAt", -1)
+        val before = store.backup()
+        assertThrows(Exception::class.java) { store.restore(bad.toString()) }
+        assertEquals(before, store.backup())
+    }
+
+    @Test fun undoneEventIdIsNeverReusedByNextGrade() {
+        val card = seed()
+        val first = store.review(card, 4)
+        val restored = requireNotNull(store.undoLastReview(first.eventId))
+        val second = store.review(restored, 4)
+        assertTrue(second.eventId > first.eventId)
+        assertNull(store.undoLastReview(first.eventId))
+        assertEquals(1, store.stats().reviews)
+        assertEquals(second.eventId, store.lastReviewUndo()!!.eventId)
+    }
+
+    @Test fun activeObjectsCannotBePermanentlyDeleted() {
+        val card = seed()
+        val folder = store.folders().single()
+        assertThrows(IllegalArgumentException::class.java) { store.purgeTrash(TrashKind.CARD, card.id) }
+        assertThrows(IllegalArgumentException::class.java) { store.purgeTrash(TrashKind.DECK, card.deckId) }
+        assertThrows(IllegalArgumentException::class.java) { store.purgeTrash(TrashKind.FOLDER, folder.id) }
+        assertEquals(card, store.getCard(card.id))
+        assertEquals(folder, store.folders().single())
     }
 }

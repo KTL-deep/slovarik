@@ -1,0 +1,6 @@
+<resources>
+    <string name="reminder_channel">Vocabulary review</string>
+    <string name="reminder_title">Time to review your words</string>
+    <string name="reminder_count">Cards ready for review: %1$d</string>
+    <string name="app_name">Slovarik</string>
+</resources>

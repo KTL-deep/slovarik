@@ -4,3 +4,10 @@ app/build/
 local.properties
 .idea/
 *.iml
+app/google-services.json
+/google-services.json
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.firebase/
+firebase-tests/node_modules/

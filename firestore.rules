@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(uid) { return request.auth != null && request.auth.uid == uid; }
+    function identity(value) { return value is string && value.matches('[a-fA-F0-9-]{32,36}'); }
+    function text(value, limit) { return value is string && value.size() > 0 && value.size() <= limit; }
+    function nonnegative(value) { return value is int && value >= 0 && value <= 9007199254740991; }
+    function deletedAt(f) { return nonnegative(f.deletedAt); }
+    function settingValue(f) {
+      return (f.key in ['language', 'target'] && f.value in ['en', 'ru', 'de', 'es', 'fr'])
+        || (f.key == 'interface_language' && f.value in ['ru', 'en'])
+        || (f.key == 'randomDirection' && f.value is bool)
+        || (f.key == 'reminder' && f.value is map
+          && f.value.keys().hasOnly(['enabled', 'hour', 'minute'])
+          && f.value.enabled is bool && f.value.hour is int && f.value.hour >= 0 && f.value.hour <= 23
+          && f.value.minute is int && f.value.minute >= 0 && f.value.minute <= 59);
+    }
+    function reviewState(f, prefix) {
+      return f[prefix + 'Reps'] is int && f[prefix + 'Reps'] >= 0 && f[prefix + 'Reps'] <= 2147483647
+        && f[prefix + 'Interval'] is int && f[prefix + 'Interval'] >= 0 && f[prefix + 'Interval'] <= 2147483647
+        && f[prefix + 'Ease'] is number && f[prefix + 'Ease'] >= 1.3 && f[prefix + 'Ease'] <= 1000000
+        && nonnegative(f[prefix + 'Due']) && f[prefix + 'Step'] is int && f[prefix + 'Step'] in [0, 1, 2];
+    }
+    function undoValue(f) {
+      return f.available is bool && (f.available == false ? f.keys().hasOnly(['available']) : (
+        f.keys().hasOnly(['available', 'card', 'event', 'beforeReps', 'beforeInterval', 'beforeEase', 'beforeDue', 'beforeStep', 'afterReps', 'afterInterval', 'afterEase', 'afterDue', 'afterStep'])
+        && identity(f.card) && identity(f.event) && reviewState(f, 'before') && reviewState(f, 'after')
+      ));
+    }
+    function validFields(d) {
+      let f = d.fields;
+      return d.deleted ? f.size() == 0 : (
+        (d.kind == 'folders' && f.keys().hasOnly(['name', 'deletedAt'])
+          && text(f.name, 4096) && deletedAt(f))
+        || (d.kind == 'decks' && f.keys().hasOnly(['folder', 'name', 'deletedAt'])
+          && identity(f.folder) && text(f.name, 4096) && deletedAt(f))
+        || (d.kind == 'cards' && f.keys().hasOnly(['deck', 'word', 'translation', 'deletedAt'])
+          && identity(f.deck) && text(f.word, 65536) && text(f.translation, 65536) && deletedAt(f))
+        || (d.kind == 'progress' && f.keys().hasOnly(['card', 'reps', 'interval', 'ease', 'due', 'step'])
+          && identity(f.card) && d.id == 'progress-' + f.card
+          && f.reps is int && f.reps >= 0 && f.reps <= 2147483647
+          && f.interval is int && f.interval >= 0 && f.interval <= 2147483647
+          && f.ease is number && f.ease >= 1.3 && f.ease <= 1000000
+          && nonnegative(f.due) && f.step is int && f.step in [0, 1, 2])
+        || (d.kind == 'events' && f.keys().hasOnly(['card', 'day', 'correct'])
+          && (f.card == null || identity(f.card)) && nonnegative(f.day)
+          && f.correct is int && f.correct in [0, 1])
+        || (d.kind == 'settings' && f.keys().hasOnly(['key', 'value']) && settingValue(f))
+        || (d.kind == 'match' && f.keys().hasOnly(['deck', 'seconds']) && identity(f.deck)
+          && f.seconds is int && f.seconds >= 0 && f.seconds <= 2147483647)
+        || (d.kind == 'undo' && undoValue(f))
+      );
+    }
+    function validRecord(id) {
+      let d = request.resource.data;
+      return d.keys().hasAll(['schema', 'id', 'kind', 'stamp', 'device', 'deleted', 'fields'])
+        && d.keys().hasOnly(['schema', 'id', 'kind', 'stamp', 'device', 'deleted', 'fields'])
+        && d.schema == 1
+        && d.id == id && d.id is string && d.id.matches('(progress-)?[a-fA-F0-9-]{32,36}')
+        && d.kind in ['folders', 'decks', 'cards', 'progress', 'events', 'settings', 'match', 'undo']
+        && (d.kind == 'progress' ? d.id.matches('progress-[a-fA-F0-9-]{32,36}') : identity(d.id))
+        && d.device is string && d.device.matches('[a-fA-F0-9-]{32,36}')
+        && d.stamp is int && d.stamp > 0 && d.stamp <= 9007199254740991
+        && d.deleted is bool && d.fields is map && d.fields.size() <= 16
+        && (!(d.kind in ['settings', 'undo']) || d.deleted == false)
+        && validFields(d);
+    }
+    match /users/{uid}/records/{id} {
+      allow read: if owns(uid);
+      allow create: if owns(uid) && validRecord(id);
+      allow update: if owns(uid) && validRecord(id)
+        && request.resource.data.kind == resource.data.kind
+        && request.resource.data.stamp >= resource.data.stamp
+        && (resource.data.deleted == false || request.resource.data.deleted == true)
+        && (resource.data.kind != 'settings' || request.resource.data.fields.key == resource.data.fields.key)
+        && (resource.data.kind != 'match' || resource.data.deleted || request.resource.data.deleted
+          || (request.resource.data.fields.deck == resource.data.fields.deck
+            && request.resource.data.fields.seconds <= resource.data.fields.seconds));
+      // Deletion markers must remain, so an old offline device cannot resurrect a purged row.
+      allow delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
