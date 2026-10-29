@@ -1,0 +1,5 @@
+<resources>
+    <string name="trash_delete_all_forever">Удалить всё навсегда</string>
+    <string name="trash_delete_all_title">Удалить всю корзину навсегда?</string>
+    <string name="trash_delete_all_warning">Все объекты в корзине, включая вложенные колоды и карточки, будут удалены окончательно. Это действие нельзя отменить. Общая история повторений останется в статистике.</string>
+</resources>

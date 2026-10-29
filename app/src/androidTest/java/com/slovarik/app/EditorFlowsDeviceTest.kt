@@ -34,7 +34,7 @@ class EditorFlowsDeviceTest {
             val registryOwner = requireNotNull(LocalActivityResultRegistryOwner.current)
             LocalizedTestTheme("ru") {
                 CompositionLocalProvider(LocalActivityResultRegistryOwner provides registryOwner) {
-                    App(store, speak = { _, _ -> })
+                    App(store, speak = { _, _ -> }, skipWelcomeForTests = true)
                 }
             }
         }
@@ -86,7 +86,7 @@ class EditorFlowsDeviceTest {
         assertEquals("книги", store.getCard(card.id)?.translation)
     }
 
-    @Test fun detectsBothDirectionsAndTranslatesIntoEditableFieldOffline() {
+    @Test fun detectsBothDirectionsAndDisclosesTranslationMode() {
         val folder = store.addFolder("Translation folder")
         store.addDeck(folder, "Translation deck")
         launch()
@@ -98,14 +98,19 @@ class EditorFlowsDeviceTest {
             fields()[0].performTextReplacement(word)
             fields()[1].performTextReplacement("")
             compose.onNode(hasText("Определим язык: $direction") or hasText("Detected: $direction")).assertExists()
-            compose.onNode((hasText("Перевести офлайн") or hasText("Translate offline")) and hasAnyAncestor(isDialog()))
-                .performClick()
-            compose.waitUntil(60_000) {
-                fields()[1].fetchSemanticsNode().config[SemanticsProperties.EditableText].text.isNotBlank()
+            if (TranslationModels.isInstalled(context)) {
+                compose.onNode((hasText("Перевести офлайн") or hasText("Translate offline")) and hasAnyAncestor(isDialog())).assertExists()
+            } else {
+                compose.onNode((hasText("Перевести через MyMemory") or hasText("Translate via MyMemory")) and hasAnyAncestor(isDialog())).assertExists()
+                compose.onNode((hasText("Без моделей введённый текст", substring = true) or
+                    hasText("Without models, pressing Translate", substring = true)) and hasAnyAncestor(isDialog())).assertExists()
             }
-            val translation = fields()[1].fetchSemanticsNode().config[SemanticsProperties.EditableText].text.lowercase()
-            assertTrue("Wrong translation for $word: $translation", translation.contains(if (word == "book") "книг" else "book"))
         }
         assertTrue(store.cards(store.decks(folder).single().id).isEmpty())
+    }
+
+    @Test fun welcomeDoesNotRequireSyncOrDownload() {
+        compose.setContent { LocalizedTestTheme("ru") { WelcomeScreen(null, {}) } }
+        compose.onNode(hasText("Продолжить без синхронизации") or hasText("Continue without sync")).assertExists()
     }
 }

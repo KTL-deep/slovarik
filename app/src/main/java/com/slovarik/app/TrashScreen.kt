@@ -24,6 +24,7 @@ internal fun TrashScreen(store: Store, refresh: Int, onChanged: () -> Unit, onBa
     val locale = LocalConfiguration.current.locales[0]
     val entries = remember(store, refresh) { store.trashItems() }
     var pendingPurge by remember { mutableStateOf<TrashItem?>(null) }
+    var pendingAll by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
     TextButton(onClick = onBack) { Text(stringResource(R.string.trash_back)) }
     Text(stringResource(R.string.trash_title), fontSize = 28.sp, fontWeight = FontWeight.Bold)
@@ -33,7 +34,13 @@ internal fun TrashScreen(store: Store, refresh: Int, onChanged: () -> Unit, onBa
         Card(colors = CardDefaults.cardColors(containerColor = Mint, contentColor = Night), shape = RoundedCornerShape(24.dp)) {
             Text(stringResource(R.string.trash_empty), Modifier.padding(24.dp), fontSize = 20.sp)
         }
-    } else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
+    } else {
+    Button(onClick = { pendingAll = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Coral, contentColor = Night)) {
+        Text(stringResource(R.string.trash_delete_all_forever), fontWeight = FontWeight.Bold)
+    }
+    Spacer(Modifier.height(12.dp))
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth().weight(1f)) {
         items(entries, key = { "${it.kind}:${it.id}" }) { item ->
             Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Lavender, contentColor = Night)) {
                 Column(Modifier.fillMaxWidth().padding(18.dp)) {
@@ -53,6 +60,16 @@ internal fun TrashScreen(store: Store, refresh: Int, onChanged: () -> Unit, onBa
         }
     }
     }
+    }
+    if (pendingAll) AlertDialog(onDismissRequest = { pendingAll = false },
+        title = { Text(stringResource(R.string.trash_delete_all_title)) },
+        text = { Text(stringResource(R.string.trash_delete_all_warning)) },
+        confirmButton = { TextButton(onClick = {
+            pendingAll = false
+            try { store.purgeAllTrash(); onChanged() }
+            catch (error: Exception) { onError(context.getString(R.string.trash_delete_error, error.message)) }
+        }, colors = ButtonDefaults.textButtonColors(contentColor = Coral)) { Text(stringResource(R.string.trash_delete_all_forever)) } },
+        dismissButton = { TextButton(onClick = { pendingAll = false }) { Text(stringResource(R.string.trash_cancel)) } })
     pendingPurge?.let { item ->
         AlertDialog(onDismissRequest = { pendingPurge = null },
             title = { Text(stringResource(R.string.trash_confirm_title)) },

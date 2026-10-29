@@ -4,8 +4,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -93,6 +97,75 @@ class StudyGesturesDeviceTest {
         compose.runOnIdle { assertEquals(0, store.stats().reviews) }
     }
 
+    @Test fun pronunciationOnlyAppearsOnVisibleEnglishFace() {
+        compose.setContent {
+            LocalizedTestTheme("en") {
+                Study(store, deck, "en", { _, _ -> }, {})
+            }
+        }
+        compose.onNodeWithText("book").assertIsDisplayed()
+        compose.onNodeWithText("Pronounce").assertIsDisplayed()
+        flipCard()
+        compose.onNodeWithText("книга").assertIsDisplayed()
+        compose.onNodeWithText("Pronounce").assertDoesNotExist()
+        flipCard()
+        compose.onNodeWithText("book").assertIsDisplayed()
+        compose.onNodeWithText("Pronounce").assertIsDisplayed()
+    }
+
+    @Test fun randomDirectionPronunciationFollowsWordFace() {
+        compose.setContent {
+            LocalizedTestTheme("en") {
+                Study(store, deck, "en", { _, _ -> }, {}, randomDirection = true)
+            }
+        }
+        val wordOnFront = compose.onAllNodesWithText("book").fetchSemanticsNodes().isNotEmpty()
+        if (wordOnFront) compose.onNodeWithText("Pronounce").assertIsDisplayed()
+        else compose.onNodeWithText("Pronounce").assertDoesNotExist()
+        flipCard()
+        if (wordOnFront) {
+            compose.onNodeWithText("книга").assertIsDisplayed()
+            compose.onNodeWithText("Pronounce").assertDoesNotExist()
+        } else {
+            compose.onNodeWithText("book").assertIsDisplayed()
+            compose.onNodeWithText("Pronounce").assertIsDisplayed()
+        }
+    }
+
+    @Test fun pronunciationSpeaksSourceWithoutFlippingOrGrading() {
+        val spoken = mutableListOf<Pair<String, String>>()
+        compose.setContent {
+            LocalizedTestTheme("en") {
+                Study(store, deck, "en", { word, language -> spoken += word to language }, {})
+            }
+        }
+        compose.onNodeWithText("Pronounce").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("book" to "en"), spoken)
+            assertEquals(0, store.stats().reviews)
+        }
+        compose.onNodeWithText("book").assertIsDisplayed()
+        compose.onNodeWithText("книга").assertDoesNotExist()
+    }
+
+    @Test fun typingFieldIsDarkWithLegibleInput() {
+        compose.setContent {
+            LocalizedTestTheme("en") {
+                Study(store, deck, "en", { _, _ -> }, {}, initialMode = "Ввод")
+            }
+        }
+        val field = compose.onNodeWithTag("study-typing-field")
+        field.performTextInput("book")
+        val pixels = field.captureToImage().toPixelMap()
+        assertEquals(Color(0xFF242424), pixels[pixels.width - 16, pixels.height / 2])
+        assertTrue((16 until pixels.width / 2).any { x ->
+            (pixels.height / 3 until pixels.height * 2 / 3).any { y ->
+                val color = pixels[x, y]
+                color.red > .8f && color.green > .8f && color.blue > .8f
+            }
+        })
+    }
+
     @Test fun englishPairsStartsDirectlyWithoutScheduling() {
         compose.setContent {
             LocalizedTestTheme("en") {
@@ -116,7 +189,6 @@ class StudyGesturesDeviceTest {
     }
     private fun verify(grade: Int) {
         launchStudy()
-        flipCard()
         drag(grade)
         compose.runOnIdle {
             val expected = schedule(Review(), grade, 0)
@@ -160,10 +232,10 @@ class StudyGesturesDeviceTest {
         compose.onNodeWithText("книга").assertExists()
     }
 
-    @Test fun cannotRateBeforeReveal() {
+    @Test fun frontOfFlashcardCanBeGradedWithoutFlipping() {
         launchStudy()
         drag(5)
-        compose.runOnIdle { assertEquals(0, store.stats().reviews) }
+        compose.runOnIdle { assertEquals(1, store.stats().reviews) }
     }
 
     @Test fun globallyRestoredCardIsShownBeforeOtherDueCards() {
@@ -209,12 +281,98 @@ class StudyGesturesDeviceTest {
     }
     @Test fun freePracticeSwipeDoesNotWriteHistory() {
         launchStudy(practice = true)
-        flipCard()
         drag(5)
         compose.runOnIdle {
             assertEquals(0, store.stats().reviews)
             assertEquals(Review(), store.cards(deck.id).single().review)
         }
+    }
+
+    @Test fun shortDragDoesNotGrade() {
+        launchStudy()
+        val distance = 40f * context.resources.displayMetrics.density
+        compose.onNodeWithTag("review-card").performTouchInput {
+            swipe(center, center + Offset(distance, 0f))
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(0, store.stats().reviews) }
+        compose.onNodeWithText("book").assertIsDisplayed()
+    }
+
+    @Test fun gradingIsLockedWhileCardDismisses() {
+        launchStudy()
+        flipCard()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("review-card").performTouchInput { swipeLeft() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.onNodeWithText("Хорошо").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(0, store.stats().reviews) }
+        compose.mainClock.advanceTimeBy(500)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(1, store.stats().reviews) }
+    }
+
+    @Test fun leavingStudyDuringDismissalDoesNotWriteAndReturnsCard() {
+        var active by mutableStateOf(true)
+        compose.setContent {
+            LocalizedTestTheme {
+                Study(store, deck, "en", { _, _ -> }, {}, Modifier.fillMaxSize(), active = active)
+            }
+        }
+        val original = compose.onNodeWithTag("review-card").fetchSemanticsNode().boundsInRoot.center
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("review-card").performTouchInput { swipeLeft() }
+        compose.runOnIdle { active = false }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1500)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(0, store.stats().reviews) }
+        val restored = compose.onNodeWithTag("review-card").fetchSemanticsNode().boundsInRoot.center
+        assertEquals(original.x, restored.x, 2f)
+        assertEquals(original.y, restored.y, 2f)
+    }
+
+    private fun verifyUnansweredCannotSwipe(mode: String) {
+        compose.setContent {
+            LocalizedTestTheme("en") {
+                Study(store, deck, "en", { _, _ -> }, {}, initialMode = mode)
+            }
+        }
+        drag(5)
+        compose.runOnIdle { assertEquals(0, store.stats().reviews) }
+    }
+
+    @Test fun quizCannotSwipeBeforeAnswer() = verifyUnansweredCannotSwipe("Тест")
+    @Test fun typingCannotSwipeBeforeAnswer() = verifyUnansweredCannotSwipe("Ввод")
+
+    @Test fun wrongQuizAnswerShowsRedResult() {
+        store.addCard(deck.id, "house", "дом")
+        compose.setContent {
+            LocalizedTestTheme("en") {
+                Study(store, deck, "en", { _, _ -> }, {}, initialMode = "Тест")
+            }
+        }
+        val prompt = if (compose.onAllNodesWithText("book").fetchSemanticsNodes().isNotEmpty()) "book" else "house"
+        compose.onNodeWithText(if (prompt == "book") "дом" else "книга").performClick()
+        compose.waitForIdle()
+        val pixels = compose.onNodeWithTag("review-card").captureToImage().toPixelMap()
+        assertEquals(swipeRatingColor(1), pixels[pixels.width / 8, pixels.height / 3])
+    }
+
+    @Test fun correctTypingShowsResultWithoutTextField() {
+        compose.setContent {
+            LocalizedTestTheme("en") {
+                Study(store, deck, "en", { _, _ -> }, {}, initialMode = "Ввод")
+            }
+        }
+        compose.onNodeWithText("Your translation").performTextInput("книга")
+        compose.onNodeWithText("Check").performClick()
+        compose.onNodeWithText("Your translation").assertDoesNotExist()
+        compose.onNodeWithText("Check").assertDoesNotExist()
+        compose.onNodeWithText("Correct!").assertExists()
+        compose.runOnIdle { assertEquals(0, store.stats().reviews) }
     }
 
     @Test fun matchDragRemovesPairAndCompletionNeverWritesReviews() {

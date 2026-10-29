@@ -1,5 +1,3 @@
-import java.security.MessageDigest
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -16,8 +14,8 @@ android {
         applicationId = "com.slovarik.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {
@@ -26,7 +24,15 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
-    androidResources { noCompress += "onnx" }
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            // Keep the installed app's signature for this privately distributed build.
+            // Store publication requires a separate owner-managed release key.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+    androidResources { ignoreAssetsPattern += ":en-ru:ru-en" }
     // Both UI languages must remain available offline, including in future app bundles.
     bundle { language { enableSplit = false } }
 }
@@ -58,34 +64,19 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
-// Never produce an APK that silently lacks the promised first-launch offline models.
-val verifyBundledTranslation by tasks.registering {
+// Model weights live in the source tree for development, not in the APK.
+val verifyTranslationMetadata by tasks.registering {
     val assetRoot = layout.projectDirectory.dir("src/main/assets/translation")
     inputs.dir(assetRoot)
     val marker = layout.buildDirectory.file("intermediates/translation-models/verified.txt")
     outputs.file(marker)
     doLast {
-        val expected = mapOf(
-            "en-ru/encoder_model_quantized.onnx" to "97f28d8295d231b7da721ded06fa8c034787df2122cd8f85b904abdc4d15bd53",
-            "en-ru/decoder_model_quantized.onnx" to "7e4e602c31130176b086cd4bf31d6d08d44a6a367617e910870e0ea3e5408574",
-            "ru-en/encoder_model_quantized.onnx" to "c10df0466540534bb70c4402d539c349b8bfa9968184cad89f51408cf13e7eb7",
-            "ru-en/decoder_model_quantized.onnx" to "d880abf58612013815554ef55c98d0f28b68190b2cb6f65c39d6e834f51dda8c"
-        )
-        expected.forEach { (path, hash) ->
-            val file = assetRoot.file(path).asFile
-            check(file.isFile) { "Missing $path. Run python tools/fetch_translation_models.py" }
-            val digest = MessageDigest.getInstance("SHA-256")
-            file.inputStream().buffered().use { input ->
-                val bytes = ByteArray(1024 * 1024)
-                var count = input.read(bytes)
-                while (count >= 0) { digest.update(bytes, 0, count); count = input.read(bytes) }
-            }
-            check(digest.digest().joinToString("") { "%02x".format(it) } == hash) { "Translation model integrity check failed: $path" }
-        }
+        check(assetRoot.file("manifest.json").asFile.isFile) { "Missing translation manifest" }
+        check(assetRoot.file("NOTICE.txt").asFile.isFile) { "Missing translation notice" }
         listOf("Apache-2.0.txt", "CC-BY-4.0.txt", "ONNX-Runtime-MIT.txt").forEach { name ->
             check(assetRoot.file("licenses/$name").asFile.isFile) { "Missing model license. Run python tools/fetch_translation_licenses.py" }
         }
-        marker.get().asFile.apply { parentFile.mkdirs(); writeText("Verified pinned OPUS-MT assets and licenses") }
+        marker.get().asFile.apply { parentFile.mkdirs(); writeText("Verified translation metadata and licenses") }
     }
 }
-tasks.named("preBuild") { dependsOn(verifyBundledTranslation) }
+tasks.named("preBuild") { dependsOn(verifyTranslationMetadata) }

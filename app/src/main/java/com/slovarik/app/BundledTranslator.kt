@@ -6,6 +6,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import org.json.JSONObject
 import java.io.Closeable
+import java.io.File
 import java.io.FileInputStream
 import java.nio.LongBuffer
 import java.nio.MappedByteBuffer
@@ -31,13 +32,12 @@ internal fun translationDirection(text: String, source: String, target: String):
     return direction.takeIf { BundledTranslator.supports(it.first, it.second) }
 }
 
-/** Offline OPUS-MT inference. Both directions are installed inside the APK.
+/** Offline OPUS-MT inference. Models are installed on demand.
  * One direction is resident at a time; all native tensors/results are closed per request.
  * Call translate on a background dispatcher, never on the Android UI thread.
  */
 internal class BundledTranslator(context: Context) : Closeable {
     private val appContext = context.applicationContext
-    private val assets = context.applicationContext.assets
     private val environment = OrtEnvironment.getEnvironment()
     private var loaded: Model? = null
 
@@ -56,27 +56,26 @@ internal class BundledTranslator(context: Context) : Closeable {
         override fun close() { try { encoder.close() } finally { decoder.close() } }
     }
 
-    private fun map(path: String): MappedByteBuffer = assets.openFd(path).use { descriptor ->
-        FileInputStream(descriptor.fileDescriptor).use { stream ->
-            stream.channel.map(FileChannel.MapMode.READ_ONLY, descriptor.startOffset, descriptor.declaredLength)
-        }
+    private fun map(file: File): MappedByteBuffer = FileInputStream(file).use { stream ->
+        stream.channel.map(FileChannel.MapMode.READ_ONLY, 0, file.length())
     }
 
     private fun load(direction: String): Model {
         loaded?.takeIf { it.direction == direction }?.let { return it }
         loaded?.close()
         loaded = null
-        val prefix = "translation/$direction"
-        val config = assets.open("$prefix/config.json").bufferedReader().use { JSONObject(it.readText()) }
-        val tokenizerJson = assets.open("$prefix/tokenizer.json").bufferedReader().use { JSONObject(it.readText()) }
+        TranslationModels.requireVerifiedDirection(appContext, direction)
+        val prefix = File(TranslationModels.installedRoot(appContext), direction)
+        val config = JSONObject(File(prefix, "config.json").readText())
+        val tokenizerJson = JSONObject(File(prefix, "tokenizer.json").readText())
         val vocab = tokenizerJson.getJSONObject("model").getJSONArray("vocab")
         val pieces = List(vocab.length()) { vocab.getJSONArray(it).getString(0) }
         val scores = DoubleArray(vocab.length()) { vocab.getJSONArray(it).getDouble(1) }
         val eos = config.getLong("eos_token_id")
         val pad = config.getLong("pad_token_id")
         val tokenizer = UnigramTokenizer(pieces, scores, pieces.indexOf("<unk>"), eos.toInt(), pad.toInt())
-        val encoderBytes = map("$prefix/encoder_model_quantized.onnx")
-        val decoderBytes = map("$prefix/decoder_model_quantized.onnx")
+        val encoderBytes = map(File(prefix, "encoder_model_quantized.onnx"))
+        val decoderBytes = map(File(prefix, "decoder_model_quantized.onnx"))
         OrtSession.SessionOptions().use { options ->
             options.setIntraOpNumThreads(2)
             val encoder = environment.createSession(encoderBytes, options)

@@ -61,6 +61,16 @@ class Store(context: Context, databaseName: String = "slovarik.db") : SQLiteOpen
         require(readableDatabase.rawQuery("SELECT 1 FROM folders WHERE id=? AND deleted_at=0", arrayOf(folder.toString())).use { it.moveToFirst() })
         return writableDatabase.compileStatement("INSERT INTO decks(folder_id,name) VALUES(?,?)").use { s -> s.bindLong(1, folder); s.bindString(2, name.trim()); s.executeInsert() }
     }
+    fun moveDeck(deckId: Long, folderId: Long) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            require(db.rawQuery("SELECT 1 FROM decks d JOIN folders f ON f.id=d.folder_id WHERE d.id=? AND d.deleted_at=0 AND f.deleted_at=0", arrayOf(deckId.toString())).use { it.moveToFirst() }) { "Deck is not active" }
+            require(db.rawQuery("SELECT 1 FROM folders WHERE id=? AND deleted_at=0", arrayOf(folderId.toString())).use { it.moveToFirst() }) { "Folder is not active" }
+            db.execSQL("UPDATE decks SET folder_id=? WHERE id=? AND deleted_at=0 AND folder_id<>?", arrayOf(folderId, deckId, folderId))
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
     fun deleteFolder(id: Long) { writableDatabase.execSQL("UPDATE folders SET deleted_at=? WHERE id=? AND deleted_at=0", arrayOf(System.currentTimeMillis().coerceAtLeast(1), id)) }
     fun deleteDeck(id: Long) { writableDatabase.execSQL("UPDATE decks SET deleted_at=? WHERE id=? AND deleted_at=0", arrayOf(System.currentTimeMillis().coerceAtLeast(1), id)) }
     fun addCard(deck: Long, word: String, translation: String): Long {
@@ -100,6 +110,18 @@ class Store(context: Context, databaseName: String = "slovarik.db") : SQLiteOpen
         try {
             require(trashItems().any { it.kind == kind && it.id == id }) { "Окончательно удалить можно только объект из корзины" }
             db.execSQL("DELETE FROM ${trashTable(kind)} WHERE id=? AND deleted_at>0", arrayOf(id))
+            db.execSQL("DELETE FROM review_undo WHERE card_id NOT IN (SELECT id FROM cards)")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+    fun purgeAllTrash() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            // Delete roots first: foreign-key cascades remove their hidden descendants.
+            db.execSQL("DELETE FROM folders WHERE deleted_at>0")
+            db.execSQL("DELETE FROM decks WHERE deleted_at>0")
+            db.execSQL("DELETE FROM cards WHERE deleted_at>0")
             db.execSQL("DELETE FROM review_undo WHERE card_id NOT IN (SELECT id FROM cards)")
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }

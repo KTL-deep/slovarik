@@ -1,0 +1,5 @@
+<resources>
+    <string name="trash_delete_all_forever">Delete everything forever</string>
+    <string name="trash_delete_all_title">Delete everything in trash forever?</string>
+    <string name="trash_delete_all_warning">All items in trash, including their decks and cards, will be permanently deleted. This cannot be undone. Overall review history will remain in statistics.</string>
+</resources>

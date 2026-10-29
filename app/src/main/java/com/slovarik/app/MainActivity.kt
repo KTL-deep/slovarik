@@ -29,6 +29,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -41,6 +43,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -116,8 +120,17 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: CloudSyncController? = null) {
+internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: CloudSyncController? = null, skipWelcomeForTests: Boolean = false) {
     val context = LocalContext.current
+    val welcomeMarker = remember(context) { java.io.File(context.noBackupFilesDir, "welcome-completed") }
+    var welcomed by remember { mutableStateOf(welcomeMarker.isFile) }
+    if (!welcomed && !skipWelcomeForTests) {
+        WelcomeScreen(cloudSync) {
+            welcomeMarker.writeText("1")
+            welcomed = true
+        }
+        return
+    }
     val bundledTranslation = remember(context) { TranslationController(context) }
     DisposableEffect(bundledTranslation) { onDispose { bundledTranslation.close() } }
     var page by rememberSaveable { mutableStateOf("home") }
@@ -268,9 +281,10 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                     }
                     DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                         DropdownMenuItem(text = { Text(stringResource(R.string.main_settings)) }, onClick = { menuExpanded = false; page = "settings" })
-                        if (page == "cards" && deck != null) {
+                         if (page == "cards" && deck != null) {
                             DropdownMenuItem(text = { Text(stringResource(R.string.main_paste_import)) }, onClick = { menuExpanded = false; importText = ""; dialog = "import" })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.main_file_import)) }, onClick = { menuExpanded = false; csv.launch(arrayOf("text/*", "application/csv", "application/octet-stream")) })
+                             DropdownMenuItem(text = { Text(stringResource(R.string.main_file_import)) }, onClick = { menuExpanded = false; csv.launch(arrayOf("text/*", "application/csv", "application/octet-stream")) })
+                             DropdownMenuItem(text = { Text(stringResource(R.string.main_move_deck)) }, onClick = { menuExpanded = false; pendingDeck = deck; dialog = "moveDeck" })
                             DropdownMenuItem(text = { Text(stringResource(R.string.main_delete_deck)) }, onClick = { menuExpanded = false; pendingDeck = deck; dialog = "deleteDeck" })
                         }
                         if (page == "decks" && folder != null) DropdownMenuItem(text = { Text(stringResource(R.string.main_delete_folder)) }, onClick = { menuExpanded = false; pendingFolder = folder; dialog = "deleteFolder" })
@@ -291,14 +305,18 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                     "home" -> {
                          val allDecks = folders.flatMap { store.decks(it.id) }
                          Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                             Text(stringResource(R.string.main_app_name), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                              Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                  val icon = remember(context) { context.packageManager.getApplicationIcon(context.packageName).toBitmap(96, 96).asImageBitmap() }
+                                  Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(32.dp).testTag("home-app-icon"))
+                                  Text(stringResource(R.string.main_app_name), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                              }
                              Spacer(Modifier.height(20.dp))
                               if (availableUndo != null) TextButton(onClick = undoReview) { Text(stringResource(R.string.main_undo)) }
                               Text(stringResource(R.string.main_my_decks), fontSize = 21.sp, fontWeight = FontWeight.Bold)
                              Spacer(Modifier.height(10.dp))
                              Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                  allDecks.forEach { item ->
-                                        DeckTile(item.name, progressLabel(store.cards(item.id)), { deck = item; folder = folders.firstOrNull { it.id == item.folderId }; page = "cards" }, modifier = Modifier.width(170.dp).heightIn(min = 172.dp))
+                                         DeckTile(item.name, progressLabel(store.cards(item.id)), { deck = item; folder = folders.firstOrNull { it.id == item.folderId }; page = "cards" }, onDelete = { pendingDeck = item; dialog = "deleteDeck" }, modifier = Modifier.width(170.dp).heightIn(min = 172.dp).testTag("home-deck-${item.id}"))
                                   }
                                    DeckTile(stringResource(R.string.main_new_deck), stringResource(R.string.main_add), { deckFolderLocked = false; input = ""; selectedFolderId = folders.firstOrNull()?.id; dialog = "deck" }, modifier = Modifier.width(170.dp).heightIn(min = 172.dp))
                              }
@@ -306,7 +324,7 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                               Text(stringResource(R.string.main_my_folders), fontSize = 21.sp, fontWeight = FontWeight.Bold)
                              Spacer(Modifier.height(10.dp))
                              Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                  folders.forEach { item -> FolderTile(item.name, progressLabel(store.decks(item.id).flatMap { store.cards(it.id) }), { folder = item; page = "decks" }) }
+                                   folders.forEach { item -> FolderTile(item.name, progressLabel(store.decks(item.id).flatMap { store.cards(it.id) }), { folder = item; page = "decks" }, onDelete = { pendingFolder = item; dialog = "deleteFolder" }, modifier = Modifier.testTag("home-folder-${item.id}")) }
                                   FolderTile(stringResource(R.string.main_new_folder), stringResource(R.string.main_add), { input = ""; dialog = "folder" })
                              }
                              Spacer(Modifier.height(18.dp))
@@ -314,7 +332,7 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                     }
                      "decks" -> {
                           Back(stringResource(R.string.main_folders)) { page = "home" }
-                          Heading(shownFolder?.name.orEmpty(), stringResource(R.string.main_choose_deck))
+                           Heading(shownFolder?.name.orEmpty(), "")
                           if (shownFolder != null) Text(progressLabel(store.decks(shownFolder.id).flatMap { store.cards(it.id) }), color = Muted)
                           SearchField(search) { search = it }
                           Spacer(Modifier.height(10.dp))
@@ -322,21 +340,24 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                               onClick = { deckFolderLocked = true; input = ""; selectedFolderId = shownFolder.id; dialog = "deck" },
                               modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
                               colors = ButtonDefaults.buttonColors(containerColor = Lemon, contentColor = Ink)
-                          ) {
-                              Text(stringResource(R.string.main_new_deck_here, shownFolder.name), fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                          }
+                           ) {
+                               Text(stringResource(R.string.main_new_deck_here, shownFolder.name), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                           }
+                           if (shownFolder != null) TextButton(onClick = { dialog = "addExistingDeck" }, modifier = Modifier.fillMaxWidth().testTag("add-existing-deck")) {
+                               Text(stringResource(R.string.main_add_existing_deck))
+                           }
                           Spacer(Modifier.height(10.dp))
                         val matchingDecks = shownFolder?.let { store.decks(it.id) }.orEmpty().filter { it.name.contains(search, ignoreCase = true) }
                          LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             items(matchingDecks) { item ->
-                                   DeckTile(item.name, progressLabel(store.cards(item.id)), { deck = item; page = "cards" })
+                                    DeckTile(item.name, progressLabel(store.cards(item.id)), { deck = item; page = "cards" }, onDelete = { pendingDeck = item; dialog = "deleteDeck" }, modifier = Modifier.fillMaxWidth().heightIn(min = 142.dp).testTag("folder-deck-${item.id}"))
                             }
                         }
                     }
                     "cards" -> if (currentDeck != null) {
                          Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                          Back(shownFolder?.name.orEmpty()) { page = "decks" }
-                          Heading(currentDeck.name, stringResource(R.string.main_local_words))
+                           Heading(currentDeck.name, "")
                          val cards = store.cards(currentDeck.id)
                          val due = cards.count { it.review.due <= System.currentTimeMillis() }
                          Text(progressLabel(cards), color = Muted)
@@ -387,7 +408,8 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                                   update()
                              })
                          }
-                         TextButton(onClick = { dialog = "translationInfo" }) { Text(stringResource(R.string.main_translation_info_action)) }
+                          ModelDownloadSection()
+                          TextButton(onClick = { dialog = "translationInfo" }) { Text(stringResource(R.string.main_translation_info_action)) }
                          Spacer(Modifier.height(12.dp))
                          if (cloudSync != null) {
                              CloudSyncSection(cloudSync)
@@ -432,19 +454,16 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
         }
         }
         val inputDialogs = setOf("folder", "deck", "card", "edit")
-        if (dialog in inputDialogs) MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF6849A0), surface = Color(0xFFF7F5F0), onSurface = Ink)) {
+        if (dialog in inputDialogs) MaterialTheme(colorScheme = darkColorScheme(primary = Lavender, surface = Color(0xFF242424), onSurface = Color.White)) {
             // Results from a dismissed editor must never populate a newly opened one.
             var editorActive by remember(dialog) { mutableStateOf(true) }
             DisposableEffect(dialog) { onDispose { editorActive = false } }
             Dialog(onDismissRequest = { dialog = "" }) {
-                Surface(shape = RoundedCornerShape(30.dp), color = Color(0xFFF7F5F0), tonalElevation = 4.dp, shadowElevation = 12.dp) {
+                 Surface(shape = RoundedCornerShape(30.dp), color = Color(0xFF242424), tonalElevation = 4.dp, shadowElevation = 12.dp) {
                     Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(24.dp)) {
                         Text(stringResource(when (dialog) {
                             "folder" -> R.string.main_new_folder; "deck" -> R.string.main_new_deck; "card" -> R.string.main_new_card; else -> R.string.main_edit_card
-                        }), fontSize = 23.sp, fontWeight = FontWeight.Bold, color = Ink)
-                        Text(stringResource(when (dialog) {
-                            "folder" -> R.string.main_folder_hint; "deck" -> R.string.main_deck_hint; "card" -> R.string.main_card_hint; else -> R.string.main_edit_hint
-                        }), fontSize = 13.sp, color = Ink.copy(alpha = .58f))
+                         }), fontSize = 23.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         Spacer(Modifier.height(20.dp))
                         when (dialog) {
                             "folder" -> EditorField(input, { input = it }, stringResource(R.string.main_name))
@@ -454,17 +473,17 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                                 when {
                                     deckFolderLocked -> {
                                         val locked = folders.firstOrNull { it.id == selectedFolderId }
-                                        if (locked != null) Surface(color = Color.White, shape = RoundedCornerShape(14.dp)) {
-                                            Text(stringResource(R.string.main_folder_value, locked.name), Modifier.padding(horizontal = 14.dp, vertical = 10.dp), color = Ink, fontSize = 13.sp)
+                                         if (locked != null) Surface(color = Color(0xFF353535), shape = RoundedCornerShape(14.dp)) {
+                                             Text(stringResource(R.string.main_folder_value, locked.name), Modifier.padding(horizontal = 14.dp, vertical = 10.dp), color = Color.White, fontSize = 13.sp)
                                         } else Text(stringResource(R.string.main_select_folder), color = Coral, fontSize = 12.sp)
                                     }
-                                    folders.isEmpty() -> Text(stringResource(R.string.main_auto_folder), color = Ink.copy(alpha = .58f), fontSize = 12.sp)
+                                     folders.isEmpty() -> Text(stringResource(R.string.main_auto_folder), color = Color.White.copy(alpha = .7f), fontSize = 12.sp)
                                     else -> {
-                                        Text(stringResource(R.string.main_deck_folder), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Ink)
+                                         Text(stringResource(R.string.main_deck_folder), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
                                         folders.forEach { choice ->
                                             Row(Modifier.fillMaxWidth().clickable { selectedFolderId = choice.id }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 RadioButton(selected = selectedFolderId == choice.id, onClick = { selectedFolderId = choice.id })
-                                                Text(choice.name, color = Ink)
+                                                 Text(choice.name, color = Color.White)
                                             }
                                         }
                                     }
@@ -477,6 +496,10 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                                 val direction = translationDirection(input, language, target)
                                 var translating by remember(dialog) { mutableStateOf(false) }
                                 Spacer(Modifier.height(4.dp))
+                                val modelRevision by TranslationModels.revision.collectAsState()
+                                @Suppress("UNUSED_VARIABLE") val refresh = modelRevision
+                                val offline = TranslationModels.isInstalled(context)
+                                 Text(stringResource(if (offline) R.string.translation_offline_disclosure else R.string.translation_online_disclosure), fontSize = 12.sp, color = Color.White.copy(alpha = .7f))
                                 TextButton(enabled = input.isNotBlank() && direction != null && !translating, onClick = {
                                     if (direction == null) return@TextButton
                                     translating = true
@@ -494,9 +517,9 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color(0xFF6849A0))
                                         Spacer(Modifier.width(8.dp))
                                     }
-                                    Text(stringResource(if (translating) R.string.main_translating else R.string.main_translate))
+                                    Text(stringResource(if (translating) R.string.main_translating else if (offline) R.string.main_translate_offline else R.string.main_translate))
                                 }
-                                if (direction != null) Text(stringResource(R.string.main_auto_direction, direction.first.uppercase(), direction.second.uppercase()), fontSize = 12.sp, color = Ink.copy(alpha = .58f))
+                                 if (direction != null) Text(stringResource(R.string.main_auto_direction, direction.first.uppercase(), direction.second.uppercase()), fontSize = 12.sp, color = Color.White.copy(alpha = .7f))
                                 if (dialog == "edit") Row {
                                     TextButton(onClick = { editingCard?.let { speak(it.word, language) } }) { Text(stringResource(R.string.main_pronounce)) }
                                     TextButton(onClick = { pendingDelete = editingCard; dialog = "delete" }) { Text(stringResource(R.string.main_delete)) }
@@ -520,14 +543,46 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                 }
             }
         }
-        if (dialog.isNotEmpty() && dialog !in inputDialogs) MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF6849A0), surface = Color(0xFFF7F5F0), onSurface = Ink)) {
+        if (dialog == "moveDeck" || dialog == "addExistingDeck") {
+            val moving = dialog == "moveDeck"
+            val destination = folder
+            val targetFolders = folders.filter { it.id != pendingDeck?.folderId }
+            val existingDecks = if (destination == null) emptyList() else folders.filter { it.id != destination.id }
+                .flatMap { source -> store.decks(source.id).map { it to source } }
+            AlertDialog(onDismissRequest = { dialog = "" },
+                title = { Text(stringResource(if (moving) R.string.main_move_deck else R.string.main_add_existing_deck)) },
+                text = { Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                    if (if (moving) targetFolders.isEmpty() else existingDecks.isEmpty()) Text(stringResource(if (moving) R.string.main_no_other_folders else R.string.main_no_other_decks))
+                    if (moving) {
+                        targetFolders.forEach { choice -> TextButton(onClick = {
+                            try {
+                                val source = requireNotNull(pendingDeck)
+                                store.moveDeck(source.id, choice.id)
+                                deck = source.copy(folderId = choice.id)
+                                folder = choice
+                                dialog = ""; pendingDeck = null; update()
+                            } catch (error: Exception) { notify(context.getString(R.string.main_move_error, error.message)); update() }
+                        }, modifier = Modifier.fillMaxWidth().testTag("move-target-${choice.id}")) { Text(choice.name) } }
+                    } else {
+                        existingDecks.forEach { (candidate, source) -> TextButton(onClick = {
+                            try {
+                                store.moveDeck(candidate.id, requireNotNull(destination).id)
+                                dialog = ""; update()
+                            } catch (error: Exception) { notify(context.getString(R.string.main_move_error, error.message)); update() }
+                        }, modifier = Modifier.fillMaxWidth().testTag("existing-deck-${candidate.id}")) {
+                            Text(stringResource(R.string.main_deck_from_folder, candidate.name, source.name))
+                        } }
+                    }
+                } }, confirmButton = {}, dismissButton = { TextButton(onClick = { dialog = "" }) { Text(stringResource(R.string.main_cancel)) } })
+        }
+        if (dialog.isNotEmpty() && dialog !in inputDialogs && dialog != "moveDeck" && dialog != "addExistingDeck") MaterialTheme(colorScheme = darkColorScheme(primary = Lavender, surface = Color(0xFF242424), onSurface = Color.White)) {
             AlertDialog(onDismissRequest = { dialog = "" }, title = { Text(when (dialog) {
              "translationInfo" -> context.getString(R.string.main_translation_info_title)
               "delete" -> context.getString(R.string.main_delete_card_title); "deleteFolder" -> context.getString(R.string.main_delete_folder_title); "deleteDeck" -> context.getString(R.string.main_delete_deck_title); "import" -> context.getString(R.string.main_import_title); else -> context.getString(R.string.main_restore_title)
         }) }, text = {
             when (dialog) {
                  "translationInfo" -> Text(stringResource(R.string.main_attribution), modifier = Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState()))
-                 "import" -> Column { Text(stringResource(R.string.main_import_hint)); Spacer(Modifier.height(8.dp)); OutlinedTextField(importText, { importText = it }, label = { Text(stringResource(R.string.main_paste_words)) }, minLines = 5) }
+                  "import" -> Column { Text(stringResource(R.string.main_import_hint)); Spacer(Modifier.height(8.dp)); OutlinedTextField(importText, { importText = it }, label = { Text(stringResource(R.string.main_paste_words)) }, minLines = 5, colors = darkInputColors()) }
                  "restore" -> Text(stringResource(R.string.main_restore_warning))
                  "delete" -> Text(stringResource(R.string.main_delete_card_warning, pendingDelete?.word.orEmpty()))
                  "deleteFolder" -> Text(stringResource(R.string.main_delete_folder_warning, pendingFolder?.name.orEmpty()))
@@ -618,15 +673,15 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
 
 @Composable private fun Back(label: String, onClick: () -> Unit) { TextButton(onClick = onClick) { Text(stringResource(R.string.main_back, label)) } }
 @Composable private fun SearchField(value: String, onChange: (String) -> Unit) {
-    TextField(value, onChange, modifier = Modifier.fillMaxWidth(), placeholder = { Text(stringResource(R.string.main_search), color = Color.DarkGray) }, leadingIcon = { AppIcon("search", color = Ink) }, singleLine = true,
-        shape = RoundedCornerShape(50.dp), colors = TextFieldDefaults.colors(focusedContainerColor = Color.White, unfocusedContainerColor = Color.White, focusedTextColor = Ink, unfocusedTextColor = Ink, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, cursorColor = Ink))
+    TextField(value, onChange, modifier = Modifier.fillMaxWidth(), placeholder = { Text(stringResource(R.string.main_search), color = Color.White.copy(alpha = .7f)) }, leadingIcon = { AppIcon("search", color = Color.White) }, singleLine = true,
+        shape = RoundedCornerShape(50.dp), colors = TextFieldDefaults.colors(focusedContainerColor = Color(0xFF353535), unfocusedContainerColor = Color(0xFF353535), focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, cursorColor = Lavender))
 }
-@Composable private fun FolderTile(title: String, subtitle: String, onClick: () -> Unit, onDelete: (() -> Unit)? = null) {
+@Composable private fun FolderTile(title: String, subtitle: String, onClick: () -> Unit, onDelete: (() -> Unit)? = null, modifier: Modifier = Modifier) {
     val (source, motion) = rememberTileMotion()
     val deleteDescription = stringResource(R.string.main_delete_folder_accessibility, title)
-    Card(colors = CardDefaults.cardColors(containerColor = Mint, contentColor = Ink), shape = RoundedCornerShape(26.dp), modifier = motion.width(170.dp).heightIn(min = 172.dp)) {
+    Card(colors = CardDefaults.cardColors(containerColor = Mint, contentColor = Ink), shape = RoundedCornerShape(26.dp), modifier = motion.width(170.dp).heightIn(min = 172.dp).then(modifier).then(if (onDelete != null) Modifier.combinedClickable(interactionSource = source, indication = null, onClick = onClick, onLongClick = onDelete, onLongClickLabel = deleteDescription) else Modifier.clickable(interactionSource = source, indication = null, onClick = onClick))) {
         Box {
-            Column(Modifier.fillMaxWidth().clickable(interactionSource = source, indication = null, onClick = onClick).padding(16.dp)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp)) {
                 Surface(color = Color.White.copy(alpha = .52f), shape = RoundedCornerShape(50.dp)) { Box(Modifier.size(47.dp), contentAlignment = Alignment.Center) { AppIcon("folder", color = Ink) } }
                 Spacer(Modifier.height(12.dp))
                 Text(title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -641,9 +696,9 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
 @Composable private fun DeckTile(title: String, subtitle: String, onClick: () -> Unit, onDelete: (() -> Unit)? = null, modifier: Modifier = Modifier.fillMaxWidth().heightIn(min = 142.dp)) {
     val (source, motion) = rememberTileMotion()
     val deleteDescription = stringResource(R.string.main_delete_deck_accessibility, title)
-    Card(colors = CardDefaults.cardColors(containerColor = Lemon, contentColor = Ink), shape = RoundedCornerShape(26.dp), modifier = motion.then(modifier)) {
+    Card(colors = CardDefaults.cardColors(containerColor = Lemon, contentColor = Ink), shape = RoundedCornerShape(26.dp), modifier = motion.then(modifier).then(if (onDelete != null) Modifier.combinedClickable(interactionSource = source, indication = null, onClick = onClick, onLongClick = onDelete, onLongClickLabel = deleteDescription) else Modifier.clickable(interactionSource = source, indication = null, onClick = onClick))) {
         Box {
-            Column(Modifier.fillMaxWidth().clickable(interactionSource = source, indication = null, onClick = onClick).padding(16.dp)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp)) {
                 AppIcon("folder", color = Ink)
                 Spacer(Modifier.height(12.dp))
                 Text(title, fontSize = 20.sp, lineHeight = 23.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -663,14 +718,14 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
     }
 }
 
-/** Light rounded field used by the modern create/edit dialogs. */
+@Composable private fun darkInputColors() = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+    focusedContainerColor = Color(0xFF353535), unfocusedContainerColor = Color(0xFF353535),
+    focusedBorderColor = Lavender, unfocusedBorderColor = Color.White.copy(alpha = .5f),
+    focusedLabelColor = Lavender, unfocusedLabelColor = Color.White.copy(alpha = .7f), cursorColor = Lavender)
+
 @Composable private fun EditorField(value: String, onChange: (String) -> Unit, label: String) {
     OutlinedTextField(value, onChange, label = { Text(label) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedTextColor = Ink, unfocusedTextColor = Ink,
-            focusedContainerColor = Color.White, unfocusedContainerColor = Color.White,
-            focusedBorderColor = Color(0xFF6849A0), unfocusedBorderColor = Ink.copy(alpha = .18f),
-            focusedLabelColor = Color(0xFF6849A0), unfocusedLabelColor = Ink.copy(alpha = .6f),
-            cursorColor = Color(0xFF6849A0)))
+        colors = darkInputColors())
 }

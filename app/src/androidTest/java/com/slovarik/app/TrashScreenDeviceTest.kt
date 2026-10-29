@@ -79,4 +79,17 @@ class TrashScreenDeviceTest {
         compose.onNodeWithText("Корзина пуста").assertExists()
         compose.runOnIdle { assertTrue(store.trashItems().isEmpty()) }
     }
+    @Test fun deleteEverythingRequiresConfirmationAndDisappearsWhenEmpty() {
+        store.deleteFolder(folderId)
+        launchTrash()
+        compose.onNodeWithText("Удалить всё навсегда").performClick()
+        compose.onNodeWithText(context.getString(R.string.trash_delete_all_title)).assertExists()
+        compose.onNodeWithText(context.getString(R.string.trash_cancel)).performClick()
+        compose.runOnIdle { assertEquals(1, store.trashItems().size) }
+        compose.onNodeWithText("Удалить всё навсегда").performClick()
+        compose.onNode(hasText(context.getString(R.string.trash_delete_all_forever)) and hasAnyAncestor(isDialog())).performClick()
+        compose.onNodeWithText("Корзина пуста").assertExists()
+        compose.onNodeWithText("Удалить всё навсегда").assertDoesNotExist()
+        compose.runOnIdle { assertTrue(store.trashItems().isEmpty()) }
+    }
 }

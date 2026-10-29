@@ -8,16 +8,13 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class BundledTranslatorDeviceTest {
-    @Test fun packagedModelsTranslateBothDirectionsWithoutAnyDownload() {
+    @Test fun packagedMetadataDoesNotIncludeModels() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        assertTrue(context.assets.list("translation/en-ru")!!.contains("encoder_model_quantized.onnx"))
-        assertTrue(context.assets.list("translation/ru-en")!!.contains("decoder_model_quantized.onnx"))
-        BundledTranslator(context).use { engine ->
-            val russian = engine.translate("book", "en", "ru").lowercase()
-            assertTrue("Expected a Russian translation, got: $russian", russian.contains("книг"))
-            val english = engine.translate("книга", "ru", "en").lowercase()
-            assertTrue("Expected an English translation, got: $english", english.contains("book"))
-            assertTrue(engine.translate("house", "en", "ru").lowercase().contains("дом"))
-        }
+        assertFalse(context.assets.list("translation/en-ru").orEmpty().contains("encoder_model_quantized.onnx"))
+        assertFalse(context.assets.list("translation/ru-en").orEmpty().contains("decoder_model_quantized.onnx"))
+        assertTrue(context.assets.list("translation").orEmpty().contains("manifest.json"))
+        val entries = TranslationModels.entries(context.assets.open("translation/manifest.json").bufferedReader().use { it.readText() })
+        assertEquals(8, entries.size)
+        assertTrue(entries.all { it.url().startsWith("https://huggingface.co/") })
     }
 }

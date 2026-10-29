@@ -17,12 +17,15 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -52,6 +55,7 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
     var revealed by remember(occurrence, mode) { mutableStateOf(false) }
     // This guard changes synchronously with the write, before a second tap can be dispatched.
     var answered by remember(occurrence, mode) { mutableStateOf(false) }
+    var swiping by remember(occurrence, mode) { mutableStateOf(false) }
     var wrongAttempts by remember(occurrence, mode) { mutableIntStateOf(0) }
     val nudge = remember(occurrence, mode) { Animatable(0f) }
     LaunchedEffect(wrongAttempts) {
@@ -84,9 +88,7 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
     }
     Column(modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState())) {
         Text(stringResource(if (practice) R.string.study_practice else R.string.study_review), fontSize = 26.sp, fontWeight = FontWeight.Bold)
-        Text(stringResource(if (practice) R.string.study_practice_subtitle else R.string.study_review_subtitle), color = Muted)
         if (mode != "Пары") Text(stringResource(R.string.study_progress, minOf(session.index + 1, session.queue.size), session.queue.size), color = Muted)
-        if (!practice) Text(stringResource(R.string.study_retry_hint), color = Muted, fontSize = 12.sp)
         if (undoEvent != null) TextButton(onClick = ::undo, enabled = active && !undoing) { Text(stringResource(R.string.study_undo)) }
         sessionError?.let { Text(it, color = Coral, fontSize = 13.sp) }
         Spacer(Modifier.height(12.dp))
@@ -118,8 +120,8 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
         }
         val correct = (mode == "Тест" && selection == answerText) ||
             (mode == "Ввод" && typed.trim().equals(answerText.trim(), ignoreCase = true))
-        fun advance(grade: Int) {
-            if (!active || !revealed || answered || session.current?.occurrence != occurrence) return
+        fun advance(grade: Int, fromSwipe: Boolean = false): Boolean {
+            if (!active || (mode != "Карточки" && !revealed) || answered || (swiping && !fromSwipe) || session.current?.occurrence != occurrence) return false
             answered = true
             sessionError = null
             try {
@@ -134,9 +136,11 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
                     session = session.advance(result.card, effectiveGrade < 3)
                     update()
                 }
+                return true
             } catch (error: Exception) {
                 answered = false
                 sessionError = context.getString(R.string.study_save_error, error.message)
+                return false
             }
         }
         AnimatedContent(targetState = currentItem to revealed, contentKey = { it.first?.occurrence }, modifier = Modifier.fillMaxWidth().graphicsLayer { translationX = nudge.value * density },
@@ -149,17 +153,24 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
         val itemPromptIsWord = promptIsWordFor(target.occurrence, randomDirection, directionSeed)
         val itemPrompt = if (itemPromptIsWord) item.word else item.translation
         val itemAnswer = if (itemPromptIsWord) item.translation else item.word
+        var resultSnapshot by remember(target.occurrence) { mutableStateOf<Boolean?>(null) }
+        if (isCurrent && itemRevealed && mode != "Карточки") resultSnapshot = correct
+        val itemCorrect = if (isCurrent) correct else resultSnapshot == true
         // Outgoing items are read-only snapshots: never expose another grade or reveal action.
         val flip by animateFloatAsState(if (mode == "Карточки" && itemRevealed) 180f else 0f,
             tween(380, easing = FastOutSlowInEasing), label = "flashcard flip")
         val answerFace = mode == "Карточки" && flip > 90f
+        val visibleWord = if (answerFace) !itemPromptIsWord else itemPromptIsWord
         val flipLabel = stringResource(R.string.study_flip)
-        SwipeReview(enabled = isCurrent && itemRevealed && !answered, practice = practice,
-            baseColor = if (isCurrent && itemRevealed && correct) Mint else Lavender,
-            onCommit = ::advance) { swipeModifier, tint ->
+        key(target.occurrence) {
+        SwipeReview(enabled = isCurrent && !answered && (mode == "Карточки" || itemRevealed), practice = practice,
+            baseColor = if (itemRevealed && mode != "Карточки") {
+                if (itemCorrect) Mint else swipeRatingColor(1)
+            } else if (itemRevealed && itemCorrect) Mint else Lavender,
+            onBusyChange = { swiping = it }, onCommit = { advance(it, fromSwipe = true) }) { swipeModifier, tint ->
         Card(colors = CardDefaults.cardColors(containerColor = tint, contentColor = Night), shape = RoundedCornerShape(28.dp),
             modifier = swipeModifier.fillMaxWidth()
-                .then(if (mode == "Карточки" && isCurrent && !answered) Modifier.clickable(onClickLabel = flipLabel) { revealed = !revealed } else Modifier)
+                .then(if (mode == "Карточки" && isCurrent && !answered && !swiping) Modifier.clickable(onClickLabel = flipLabel) { revealed = !revealed } else Modifier)
                 .graphicsLayer {
                 if (mode == "Карточки") rotationY = flip
                 cameraDistance = 12f * density * 100f
@@ -187,36 +198,37 @@ fun Study(store: Store, deck: Deck, language: String, speak: (String, String) ->
                 }
                 when (mode) {
                     "Карточки" -> {
-                        if (itemRevealed && isCurrent) TextButton(onClick = { speak(item.word, language) }, modifier = Modifier.height(48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Night)) { AppIcon("sound", Modifier.size(18.dp), Night); Spacer(Modifier.width(7.dp)); Text(stringResource(R.string.study_speak)) }
+                        if (visibleWord && isCurrent) TextButton(onClick = { speak(item.word, language) }, enabled = !swiping, modifier = Modifier.height(48.dp), colors = ButtonDefaults.textButtonColors(contentColor = Night)) { AppIcon("sound", Modifier.size(18.dp), Night); Spacer(Modifier.width(7.dp)); Text(stringResource(R.string.study_speak)) }
                         else Spacer(Modifier.height(48.dp))
                     }
                     "Тест" -> {
                         if (isCurrent && !itemRevealed) options.forEach { answer ->
-                            OutlinedButton(onClick = { if (!revealed) { selection = answer; revealed = true; if (answer != itemAnswer) wrongAttempts++ } }, enabled = !revealed, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Night, disabledContentColor = Night.copy(alpha = .5f))) { Text(answer) }
+                            OutlinedButton(onClick = { if (!revealed && !swiping) { selection = answer; revealed = true; if (answer != itemAnswer) wrongAttempts++ } }, enabled = !revealed && !swiping, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = Night, disabledContentColor = Night.copy(alpha = .5f))) { Text(answer) }
                         }
-                        if (itemRevealed || !isCurrent) Text(if (isCurrent && selection == itemAnswer) stringResource(R.string.study_correct) else stringResource(R.string.study_answer, itemAnswer), color = Night)
+                        if (itemRevealed || !isCurrent) Text(if (itemCorrect) stringResource(R.string.study_correct) else stringResource(R.string.study_answer, itemAnswer), color = Night)
                     }
                     else -> {
-                        if (isCurrent) {
-                            OutlinedTextField(typed, { typed = it }, label = { Text(stringResource(R.string.study_your_translation)) }, singleLine = true, enabled = !itemRevealed, colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Night, unfocusedTextColor = Night, focusedLabelColor = Night, unfocusedLabelColor = Night, focusedBorderColor = Night, unfocusedBorderColor = Night))
-                            if (!itemRevealed) TextButton(enabled = typed.isNotBlank(), onClick = { if (!revealed) { keyboard?.hide(); revealed = true; if (!typed.trim().equals(itemAnswer.trim(), ignoreCase = true)) wrongAttempts++ } }, colors = ButtonDefaults.textButtonColors(contentColor = Night)) { Text(stringResource(R.string.study_check)) }
+                        if (isCurrent && !itemRevealed) {
+                            OutlinedTextField(typed, { typed = it }, modifier = Modifier.testTag("study-typing-field"), label = { Text(stringResource(R.string.study_your_translation)) }, singleLine = true, enabled = !swiping, colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedLabelColor = Muted, unfocusedLabelColor = Muted, focusedBorderColor = Lavender, unfocusedBorderColor = Muted, cursorColor = Lavender, focusedContainerColor = Color(0xFF242424), unfocusedContainerColor = Color(0xFF242424)))
+                            TextButton(enabled = typed.isNotBlank() && !swiping, onClick = { if (!revealed && !swiping) { keyboard?.hide(); revealed = true; if (!typed.trim().equals(itemAnswer.trim(), ignoreCase = true)) wrongAttempts++ } }, colors = ButtonDefaults.textButtonColors(contentColor = Night)) { Text(stringResource(R.string.study_check)) }
                         }
-                        if (itemRevealed || !isCurrent) Text(if (isCurrent && typed.trim().equals(itemAnswer.trim(), ignoreCase = true)) stringResource(R.string.study_correct) else stringResource(R.string.study_answer, itemAnswer), color = Night)
+                        if (itemRevealed || !isCurrent) Text(if (itemCorrect) stringResource(R.string.study_correct) else stringResource(R.string.study_answer, itemAnswer), color = Night)
                     }
                 }
             }
         }
         }
         }
+        }
         if (revealed) {
             Spacer(Modifier.height(20.dp))
             if (practice) {
-                Button(onClick = { advance(4) }, enabled = active && !answered, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.study_next_word)) }
+                Button(onClick = { advance(4) }, enabled = active && !answered && !swiping, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.study_next_word)) }
             } else {
                 Text(stringResource(R.string.study_rate_prompt), fontWeight = FontWeight.Bold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     listOf(1 to R.string.swipe_again, 3 to R.string.swipe_hard, 4 to R.string.swipe_good, 5 to R.string.swipe_easy).forEach { (grade, label) ->
-                        OutlinedButton(onClick = { advance(grade) }, enabled = active && !answered, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp)) {
+                        OutlinedButton(onClick = { advance(grade) }, enabled = active && !answered && !swiping, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp)) {
                             Text(stringResource(label), fontSize = 11.sp, maxLines = 1)
                         }
                     }

@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -22,7 +23,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -34,6 +37,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.sign
 
 private data class RatingDirection(val grade: Int, val color: Color)
 
@@ -58,18 +62,45 @@ internal fun SwipeReview(
     enabled: Boolean,
     practice: Boolean,
     baseColor: Color,
-    onCommit: (Int) -> Unit,
+    onBusyChange: (Boolean) -> Unit,
+    onCommit: (Int) -> Boolean,
     content: @Composable (Modifier, Color) -> Unit,
 ) {
     val threshold = with(LocalDensity.current) { 90.dp.toPx() }
+    val rootView = LocalView.current.rootView
     val scope = rememberCoroutineScope()
+    val currentEnabled = rememberUpdatedState(enabled)
+    val currentCommit = rememberUpdatedState(onCommit)
+    val currentBusyChange = rememberUpdatedState(onBusyChange)
     var offset by remember { mutableStateOf(Offset.Zero) }
-    var springBack by remember { mutableStateOf<Job?>(null) }
+    var motion by remember { mutableStateOf<Job?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var width by remember { mutableStateOf(0) }
+    var height by remember { mutableStateOf(0) }
     fun reset() {
-        springBack?.cancel()
+        motion?.cancel()
         val start = offset
-        springBack = scope.launch {
+        motion = scope.launch {
             Animatable(start, Offset.VectorConverter).animateTo(Offset.Zero, spring()) { offset = value }
+        }
+    }
+    fun dismiss(grade: Int, moved: Offset) {
+        if (busy || !currentEnabled.value) return
+        busy = true
+        currentBusyChange.value(true)
+        motion?.cancel()
+        motion = scope.launch {
+            val horizontal = abs(moved.x) > abs(moved.y)
+            // Move beyond the viewport, not just the card: a short card near the top
+            // can otherwise still be visible when the next item replaces it.
+            val destination = if (horizontal) Offset(moved.x.sign * (rootView.width + width + abs(moved.x)), moved.y)
+                else Offset(moved.x, moved.y.sign * (rootView.height + height + abs(moved.y)))
+            Animatable(moved, Offset.VectorConverter).animateTo(destination, tween(180)) { offset = value }
+            if (!currentEnabled.value || !currentCommit.value(grade)) {
+                Animatable(offset, Offset.VectorConverter).animateTo(Offset.Zero, spring()) { offset = value }
+                busy = false
+                currentBusyChange.value(false)
+            }
         }
     }
     val rating = direction(offset)
@@ -91,32 +122,34 @@ internal fun SwipeReview(
         targetValue = if (enabled) lerp(baseColor, rating.color, intensity) else baseColor,
         animationSpec = tween(100), label = "swipe rating background"
     )
-    val gesture = if (enabled) Modifier
-        .semantics {
+    val actions = if (enabled && !busy) Modifier.semantics {
             customActions = listOf(
-                CustomAccessibilityAction(leftAction) { onCommit(5); true },
-                CustomAccessibilityAction(downAction) { onCommit(3); true },
-                CustomAccessibilityAction(rightAction) { onCommit(1); true },
-                CustomAccessibilityAction(upAction) { onCommit(4); true },
+                CustomAccessibilityAction(leftAction) { dismiss(5, Offset(-threshold, 0f)); true },
+                CustomAccessibilityAction(downAction) { dismiss(3, Offset(0f, threshold)); true },
+                CustomAccessibilityAction(rightAction) { dismiss(1, Offset(threshold, 0f)); true },
+                CustomAccessibilityAction(upAction) { dismiss(4, Offset(0f, -threshold)); true },
             )
-        }
-        .pointerInput(enabled, practice) {
+        } else Modifier
+    val gesture = if (enabled) Modifier.pointerInput(enabled, practice) {
             detectDragGestures(
-                onDragStart = { springBack?.cancel(); offset = Offset.Zero },
-                onDragCancel = { reset() },
+                onDragStart = { if (!busy) motion?.cancel() },
+                onDragCancel = { if (!busy) reset() },
                 onDragEnd = {
-                    val moved = offset
-                    if (max(abs(moved.x), abs(moved.y)) >= threshold) {
-                        offset = Offset.Zero
-                        onCommit(direction(moved).grade)
-                    } else reset()
+                    if (!busy) {
+                        val moved = offset
+                        if (max(abs(moved.x), abs(moved.y)) >= threshold) {
+                            dismiss(direction(moved).grade, moved)
+                        } else reset()
+                    }
                 },
             ) { change, amount ->
-                change.consume()
-                offset += amount
+                if (!busy) {
+                    change.consume()
+                    offset += amount
+                }
             }
         } else Modifier
-    Box(Modifier.fillMaxWidth().testTag("review-card").then(gesture).graphicsLayer {
+    Box(Modifier.fillMaxWidth().testTag("review-card").then(actions).then(gesture).onSizeChanged { width = it.width; height = it.height }.graphicsLayer {
             translationX = offset.x
             translationY = offset.y
             rotationZ = (offset.x / threshold).coerceIn(-1f, 1f) * 5f
