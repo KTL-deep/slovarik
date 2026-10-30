@@ -19,17 +19,17 @@ import java.text.DateFormat
 import java.util.Date
 
 @Composable
-internal fun CloudSyncSection(controller: CloudSyncController) {
+internal fun CloudSyncSection(controller: CloudSyncController, compact: Boolean = false) {
     val state by controller.state.collectAsState()
     val scope = rememberCoroutineScope()
     val activity = LocalContext.current.activityOrNull()
     var confirmation by remember { mutableStateOf("") }
     val working = state.phase == CloudSyncPhase.SYNCING
-    Text(stringResource(R.string.sync_title), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-    Text(stringResource(R.string.sync_description), fontSize = 13.sp, color = Muted)
+    Text(stringResource(if (compact) R.string.welcome_sync_title else R.string.sync_title), style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    Text(stringResource(if (compact) R.string.welcome_sync_hint else R.string.sync_description), fontSize = 13.sp, color = Muted)
     Spacer(Modifier.height(8.dp))
     state.email?.let { Text(it, fontWeight = FontWeight.Medium) }
-    Text(stringResource(when (state.phase) {
+    if (!compact || state.phase != CloudSyncPhase.SIGNED_OUT) Text(stringResource(when (state.phase) {
         CloudSyncPhase.UNCONFIGURED -> R.string.sync_not_configured
         CloudSyncPhase.SIGNED_OUT -> R.string.sync_signed_out
         CloudSyncPhase.READY -> R.string.sync_ready
@@ -37,7 +37,7 @@ internal fun CloudSyncSection(controller: CloudSyncController) {
         CloudSyncPhase.ACCOUNT_MISMATCH -> R.string.sync_wrong_account
         CloudSyncPhase.ERROR -> R.string.sync_error
     }), color = if (state.phase == CloudSyncPhase.ERROR || state.phase == CloudSyncPhase.ACCOUNT_MISMATCH) Coral else Muted, fontSize = 13.sp)
-    if (state.lastSync > 0) Text(
+    if (!compact && state.lastSync > 0) Text(
         stringResource(R.string.sync_last_time, DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(state.lastSync))),
         color = Muted, fontSize = 12.sp)
     if (state.email == null) {

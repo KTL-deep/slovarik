@@ -48,20 +48,22 @@ class HomeNavigationDeviceTest {
     }
 
     private fun longPress(tag: String) {
-        compose.onNodeWithTag(tag).performTouchInput { longClick(center) }
+        compose.onNodeWithTag(tag).performTouchInput { down(center); advanceEventTime(700); cancel() }
     }
 
     private fun dialogText(id: Int) = hasText(context.getString(id)) or
         hasText(InstrumentationRegistry.getInstrumentation().targetContext.getString(id))
 
-    @Test fun homeDeckLongPressRequiresConfirmationAndMovesDeckWithCardToTrash() {
+    @Test fun homeDeckLongPressDoesNotDeleteAndCrossRequiresConfirmation() {
         launch()
         longPress("home-deck-$deckId")
-        compose.onNodeWithText(context.getString(R.string.main_delete_deck_title)).assertExists()
+        compose.onNodeWithText(context.getString(R.string.main_delete_deck_title)).assertDoesNotExist()
+        compose.onNodeWithContentDescription(context.getString(R.string.main_delete_deck_accessibility, "Home fixture deck")).performClick()
+        compose.onNode(dialogText(R.string.main_delete_deck_title) and hasAnyAncestor(isDialog())).assertExists()
         compose.runOnIdle { assertEquals(deckId, store.decks(folderId).single().id) }
         compose.onNode(dialogText(R.string.main_cancel) and hasAnyAncestor(isDialog())).performClick()
         compose.runOnIdle { assertNotNull(store.getCard(cardId)); assertTrue(store.trashItems().isEmpty()) }
-        longPress("home-deck-$deckId")
+        compose.onNodeWithContentDescription(context.getString(R.string.main_delete_deck_accessibility, "Home fixture deck")).performClick()
         compose.onNode(dialogText(R.string.main_to_trash) and hasAnyAncestor(isDialog())).performClick()
         compose.runOnIdle {
             assertTrue(store.decks(folderId).isEmpty())
@@ -72,13 +74,14 @@ class HomeNavigationDeviceTest {
         }
     }
 
-    @Test fun homeFolderLongPressRequiresConfirmationAndMovesFolderWithChildrenToTrash() {
+    @Test fun homeFolderLongPressDoesNotDeleteAndCrossRequiresConfirmation() {
         launch()
         longPress("home-folder-$folderId")
-        compose.onNodeWithText(context.getString(R.string.main_delete_folder_title)).assertExists()
+        compose.onNodeWithText(context.getString(R.string.main_delete_folder_title)).assertDoesNotExist()
+        compose.onNodeWithContentDescription(context.getString(R.string.main_delete_folder_accessibility, "Home fixture folder")).performClick()
         compose.onNode(dialogText(R.string.main_cancel) and hasAnyAncestor(isDialog())).performClick()
         compose.runOnIdle { assertEquals(1, store.folders().size); assertNotNull(store.getCard(cardId)) }
-        longPress("home-folder-$folderId")
+        compose.onNodeWithContentDescription(context.getString(R.string.main_delete_folder_accessibility, "Home fixture folder")).performClick()
         compose.onNode(dialogText(R.string.main_to_trash) and hasAnyAncestor(isDialog())).performClick()
         compose.runOnIdle {
             assertTrue(store.folders().isEmpty())
@@ -90,15 +93,17 @@ class HomeNavigationDeviceTest {
         }
     }
 
-    @Test fun folderPageDeckLongPressAlsoConfirmsBeforeDeleting() {
+    @Test fun folderPageDeckLongPressDoesNotDelete() {
         launch()
         compose.onNodeWithTag("home-folder-$folderId").performClick()
         compose.onNodeWithTag("folder-deck-$deckId").assertExists()
         longPress("folder-deck-$deckId")
-        compose.onNodeWithText(context.getString(R.string.main_delete_deck_title)).assertExists()
+        compose.onNodeWithText(context.getString(R.string.main_delete_deck_title)).assertDoesNotExist()
+        compose.runOnIdle { assertEquals(1, store.decks(folderId).size) }
+        compose.onNodeWithContentDescription(context.getString(R.string.main_delete_deck_accessibility, "Home fixture deck")).performClick()
         compose.onNode(dialogText(R.string.main_cancel) and hasAnyAncestor(isDialog())).performClick()
         compose.runOnIdle { assertEquals(1, store.decks(folderId).size) }
-        longPress("folder-deck-$deckId")
+        compose.onNodeWithContentDescription(context.getString(R.string.main_delete_deck_accessibility, "Home fixture deck")).performClick()
         compose.onNode(dialogText(R.string.main_to_trash) and hasAnyAncestor(isDialog())).performClick()
         compose.runOnIdle { assertTrue(store.decks(folderId).isEmpty()); assertEquals(TrashKind.DECK, store.trashItems().single().kind) }
     }

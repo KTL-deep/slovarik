@@ -29,6 +29,27 @@ class SyncLocalStoreDeviceTest {
     }
     private fun local(kind: String) = sync.pending().single { it.kind == kind }
 
+    @Test fun unfiledDeckSyncExportsAndAppliesNullParentWithoutSyntheticFolder() {
+        val deck = store.addDeck(null, "Local")
+        val card = store.addCard(deck, "word", "translation")
+        val exported = local("decks")
+        assertTrue(exported.fields.containsKey("folder"))
+        assertNull(exported.fields["folder"])
+        assertEquals(card, store.cards(deck).single().id)
+        val remote = SyncRecord("remote-deck", "decks", exported.stamp + 1000, "peer", false, mapOf("folder" to null, "name" to "Remote", "deletedAt" to 0L))
+        assertTrue(sync.applyRemote(listOf(remote)))
+        assertEquals(2, store.decks(null).size)
+        assertTrue(store.folders().isEmpty())
+        assertThrows(IllegalArgumentException::class.java) {
+            sync.applyRemote(listOf(remote.copy(stamp = remote.stamp + 1, fields = remote.fields + ("folder" to ""))))
+        }
+        val folder = store.addFolder("F")
+        store.moveDeck(deck, folder)
+        assertNotNull(local("decks").fields["folder"])
+        store.moveDeck(deck, null)
+        assertNull(local("decks").fields["folder"])
+    }
+
     @Test fun migrationKeepsV2IdsProgressAndHistory() {
         store.close()
         context.deleteDatabase(databaseName)

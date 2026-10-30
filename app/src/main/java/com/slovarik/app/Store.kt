@@ -7,7 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class Folder(val id: Long, val name: String)
-data class Deck(val id: Long, val folderId: Long, val name: String)
+data class Deck(val id: Long, val folderId: Long?, val name: String)
 data class Card(val id: Long, val deckId: Long, val word: String, val translation: String, val review: Review)
 data class Stats(val reviews: Int, val correct: Int, val days: Int)
 enum class TrashKind { FOLDER, DECK, CARD }
@@ -15,11 +15,15 @@ data class TrashItem(val kind: TrashKind, val id: Long, val title: String, val s
 data class ReviewUndo(val eventId: Long, val card: Card)
 data class ReviewResult(val eventId: Long, val card: Card)
 
-class Store(context: Context, databaseName: String = "slovarik.db") : SQLiteOpenHelper(context, databaseName, null, 4) {
-    override fun onConfigure(db: SQLiteDatabase) { db.setForeignKeyConstraintsEnabled(true) }
+class Store(context: Context, databaseName: String = "slovarik.db") : SQLiteOpenHelper(context, databaseName, null, 5) {
+    override fun onConfigure(db: SQLiteDatabase) {
+        val version = db.rawQuery("PRAGMA user_version", null).use { it.moveToFirst(); it.getInt(0) }
+        db.setForeignKeyConstraintsEnabled(version == 0 || version >= 5)
+    }
+    override fun onOpen(db: SQLiteDatabase) { db.setForeignKeyConstraintsEnabled(true) }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE folders(id INTEGER PRIMARY KEY, name TEXT NOT NULL, deleted_at INTEGER NOT NULL DEFAULT 0)")
-        db.execSQL("CREATE TABLE decks(id INTEGER PRIMARY KEY, folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE, name TEXT NOT NULL, deleted_at INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE decks(id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE, name TEXT NOT NULL, deleted_at INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE TABLE cards(id INTEGER PRIMARY KEY, deck_id INTEGER NOT NULL REFERENCES decks(id) ON DELETE CASCADE, word TEXT NOT NULL, translation TEXT NOT NULL, reps INTEGER NOT NULL DEFAULT 0, interval_days INTEGER NOT NULL DEFAULT 0, ease REAL NOT NULL DEFAULT 2.5, due INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NOT NULL DEFAULT 0, learning_step INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE TABLE events(id INTEGER PRIMARY KEY, card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL, day INTEGER NOT NULL, correct INTEGER NOT NULL)")
         createUndo(db)
@@ -41,40 +45,58 @@ class Store(context: Context, databaseName: String = "slovarik.db") : SQLiteOpen
         }
         if (oldVersion < 3) SyncLocalStore.createSchema(db)
         if (oldVersion < 4) UserProfileStore.createSchema(db)
+        if (oldVersion < 5) {
+            // SQLiteOpenHelper runs upgrades in a transaction. FK enforcement was disabled in
+            // onConfigure, before that transaction began, so dropping decks cannot cascade cards.
+            val schema = db.rawQuery("SELECT type,name,sql FROM sqlite_master WHERE (type='trigger' OR type='index' AND tbl_name='decks') AND sql IS NOT NULL ORDER BY type,name", null).use { c ->
+                buildList { while (c.moveToNext()) add(Triple(c.getString(0), c.getString(1), c.getString(2))) }
+            }
+            schema.filter { it.first == "trigger" }.forEach { db.execSQL("DROP TRIGGER \"${it.second}\"") }
+            db.execSQL("CREATE TABLE decks_new(id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE, name TEXT NOT NULL, deleted_at INTEGER NOT NULL DEFAULT 0)")
+            db.execSQL("INSERT INTO decks_new(id,folder_id,name,deleted_at) SELECT id,folder_id,name,deleted_at FROM decks")
+            db.execSQL("DROP TABLE decks")
+            db.execSQL("ALTER TABLE decks_new RENAME TO decks")
+            schema.forEach { db.execSQL(it.third) }
+            db.rawQuery("PRAGMA foreign_key_check", null).use { require(!it.moveToFirst()) { "Invalid foreign keys after deck migration" } }
+        }
     }
 
     fun folders(): List<Folder> = readableDatabase.rawQuery("SELECT id,name FROM folders WHERE deleted_at=0 ORDER BY id", null).use { c ->
         buildList { while (c.moveToNext()) add(Folder(c.getLong(0), c.getString(1))) }
     }
-    fun decks(folder: Long): List<Deck> = readableDatabase.rawQuery("SELECT d.id,d.folder_id,d.name FROM decks d JOIN folders f ON f.id=d.folder_id WHERE d.folder_id=? AND d.deleted_at=0 AND f.deleted_at=0 ORDER BY d.id", arrayOf(folder.toString())).use { c ->
-        buildList { while (c.moveToNext()) add(Deck(c.getLong(0), c.getLong(1), c.getString(2))) }
+    private val activeDeckJoin = " FROM decks d LEFT JOIN folders f ON f.id=d.folder_id WHERE d.deleted_at=0 AND (d.folder_id IS NULL OR f.deleted_at=0)"
+    fun decks(folder: Long?): List<Deck> = readableDatabase.rawQuery("SELECT d.id,d.folder_id,d.name $activeDeckJoin AND d.folder_id ${if (folder == null) "IS NULL" else "=?"} ORDER BY d.id", if (folder == null) null else arrayOf(folder.toString())).use { c ->
+        buildList { while (c.moveToNext()) add(Deck(c.getLong(0), if (c.isNull(1)) null else c.getLong(1), c.getString(2))) }
+    }
+    fun allDecks(): List<Deck> = readableDatabase.rawQuery("SELECT d.id,d.folder_id,d.name $activeDeckJoin ORDER BY d.id", null).use { c ->
+        buildList { while (c.moveToNext()) add(Deck(c.getLong(0), if (c.isNull(1)) null else c.getLong(1), c.getString(2))) }
     }
     private fun cardFromCursor(c: android.database.Cursor) = Card(c.getLong(0), c.getLong(1), c.getString(2), c.getString(3), Review(c.getInt(4), c.getInt(5), c.getDouble(6), c.getLong(7), c.getInt(8)))
     private val cardColumns = "c.id,c.deck_id,c.word,c.translation,c.reps,c.interval_days,c.ease,c.due,c.learning_step"
-    private val activeJoin = " FROM cards c JOIN decks d ON d.id=c.deck_id JOIN folders f ON f.id=d.folder_id WHERE c.deleted_at=0 AND d.deleted_at=0 AND f.deleted_at=0"
+    private val activeJoin = " FROM cards c JOIN decks d ON d.id=c.deck_id LEFT JOIN folders f ON f.id=d.folder_id WHERE c.deleted_at=0 AND d.deleted_at=0 AND (d.folder_id IS NULL OR f.deleted_at=0)"
     fun cards(deck: Long): List<Card> = readableDatabase.rawQuery("SELECT $cardColumns $activeJoin AND c.deck_id=? ORDER BY c.id", arrayOf(deck.toString())).use { c ->
         buildList { while (c.moveToNext()) add(cardFromCursor(c)) }
     }
     fun getCard(id: Long): Card? = readableDatabase.rawQuery("SELECT $cardColumns $activeJoin AND c.id=?", arrayOf(id.toString())).use { c -> if (c.moveToFirst()) cardFromCursor(c) else null }
     fun addFolder(name: String): Long = writableDatabase.compileStatement("INSERT INTO folders(name) VALUES(?)").use { s -> s.bindString(1, name.trim()); s.executeInsert() }
-    fun addDeck(folder: Long, name: String): Long {
-        require(readableDatabase.rawQuery("SELECT 1 FROM folders WHERE id=? AND deleted_at=0", arrayOf(folder.toString())).use { it.moveToFirst() })
-        return writableDatabase.compileStatement("INSERT INTO decks(folder_id,name) VALUES(?,?)").use { s -> s.bindLong(1, folder); s.bindString(2, name.trim()); s.executeInsert() }
+    fun addDeck(folder: Long?, name: String): Long {
+        if (folder != null) require(readableDatabase.rawQuery("SELECT 1 FROM folders WHERE id=? AND deleted_at=0", arrayOf(folder.toString())).use { it.moveToFirst() })
+        return writableDatabase.compileStatement("INSERT INTO decks(folder_id,name) VALUES(?,?)").use { s -> if (folder == null) s.bindNull(1) else s.bindLong(1, folder); s.bindString(2, name.trim()); s.executeInsert() }
     }
-    fun moveDeck(deckId: Long, folderId: Long) {
+    fun moveDeck(deckId: Long, folderId: Long?) {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            require(db.rawQuery("SELECT 1 FROM decks d JOIN folders f ON f.id=d.folder_id WHERE d.id=? AND d.deleted_at=0 AND f.deleted_at=0", arrayOf(deckId.toString())).use { it.moveToFirst() }) { "Deck is not active" }
-            require(db.rawQuery("SELECT 1 FROM folders WHERE id=? AND deleted_at=0", arrayOf(folderId.toString())).use { it.moveToFirst() }) { "Folder is not active" }
-            db.execSQL("UPDATE decks SET folder_id=? WHERE id=? AND deleted_at=0 AND folder_id<>?", arrayOf(folderId, deckId, folderId))
+            require(db.rawQuery("SELECT 1 $activeDeckJoin AND d.id=?", arrayOf(deckId.toString())).use { it.moveToFirst() }) { "Deck is not active" }
+            if (folderId != null) require(db.rawQuery("SELECT 1 FROM folders WHERE id=? AND deleted_at=0", arrayOf(folderId.toString())).use { it.moveToFirst() }) { "Folder is not active" }
+            db.execSQL("UPDATE decks SET folder_id=? WHERE id=? AND deleted_at=0 AND folder_id IS NOT ?", arrayOf<Any?>(folderId, deckId, folderId))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
     fun deleteFolder(id: Long) { writableDatabase.execSQL("UPDATE folders SET deleted_at=? WHERE id=? AND deleted_at=0", arrayOf(System.currentTimeMillis().coerceAtLeast(1), id)) }
     fun deleteDeck(id: Long) { writableDatabase.execSQL("UPDATE decks SET deleted_at=? WHERE id=? AND deleted_at=0", arrayOf(System.currentTimeMillis().coerceAtLeast(1), id)) }
     fun addCard(deck: Long, word: String, translation: String): Long {
-        require(readableDatabase.rawQuery("SELECT 1 FROM decks d JOIN folders f ON f.id=d.folder_id WHERE d.id=? AND d.deleted_at=0 AND f.deleted_at=0", arrayOf(deck.toString())).use { it.moveToFirst() })
+        require(readableDatabase.rawQuery("SELECT 1 $activeDeckJoin AND d.id=?", arrayOf(deck.toString())).use { it.moveToFirst() })
         return writableDatabase.compileStatement("INSERT INTO cards(deck_id,word,translation) VALUES(?,?,?)").use { s ->
             s.bindLong(1, deck); s.bindString(2, word.trim()); s.bindString(3, translation.trim()); s.executeInsert()
         }
@@ -90,8 +112,8 @@ class Store(context: Context, databaseName: String = "slovarik.db") : SQLiteOpen
     fun trashItems(): List<TrashItem> {
         val result = mutableListOf<TrashItem>()
         readableDatabase.rawQuery("SELECT id,name,deleted_at FROM folders WHERE deleted_at>0 ORDER BY id", null).use { c -> while (c.moveToNext()) result += TrashItem(TrashKind.FOLDER, c.getLong(0), c.getString(1), "", c.getLong(2)) }
-        readableDatabase.rawQuery("SELECT d.id,d.name,f.name,d.deleted_at FROM decks d JOIN folders f ON f.id=d.folder_id WHERE d.deleted_at>0 AND f.deleted_at=0 ORDER BY d.id", null).use { c -> while (c.moveToNext()) result += TrashItem(TrashKind.DECK, c.getLong(0), c.getString(1), c.getString(2), c.getLong(3)) }
-        readableDatabase.rawQuery("SELECT c.id,c.word,d.name,c.deleted_at FROM cards c JOIN decks d ON d.id=c.deck_id JOIN folders f ON f.id=d.folder_id WHERE c.deleted_at>0 AND d.deleted_at=0 AND f.deleted_at=0 ORDER BY c.id", null).use { c -> while (c.moveToNext()) result += TrashItem(TrashKind.CARD, c.getLong(0), c.getString(1), c.getString(2), c.getLong(3)) }
+        readableDatabase.rawQuery("SELECT d.id,d.name,COALESCE(f.name,''),d.deleted_at FROM decks d LEFT JOIN folders f ON f.id=d.folder_id WHERE d.deleted_at>0 AND (d.folder_id IS NULL OR f.deleted_at=0) ORDER BY d.id", null).use { c -> while (c.moveToNext()) result += TrashItem(TrashKind.DECK, c.getLong(0), c.getString(1), c.getString(2), c.getLong(3)) }
+        readableDatabase.rawQuery("SELECT c.id,c.word,d.name,c.deleted_at FROM cards c JOIN decks d ON d.id=c.deck_id LEFT JOIN folders f ON f.id=d.folder_id WHERE c.deleted_at>0 AND d.deleted_at=0 AND (d.folder_id IS NULL OR f.deleted_at=0) ORDER BY c.id", null).use { c -> while (c.moveToNext()) result += TrashItem(TrashKind.CARD, c.getLong(0), c.getString(1), c.getString(2), c.getLong(3)) }
         return result
     }
     private fun trashTable(kind: TrashKind) = when (kind) { TrashKind.FOLDER -> "folders"; TrashKind.DECK -> "decks"; TrashKind.CARD -> "cards" }
@@ -179,42 +201,43 @@ class Store(context: Context, databaseName: String = "slovarik.db") : SQLiteOpen
 
     /** Full versioned backup, including hidden descendants and history. */
     fun backup(): String {
-        val root = JSONObject().put("version", 2)
+        val root = JSONObject().put("version", 3)
         val foldersJson = JSONArray()
-        readableDatabase.rawQuery("SELECT id,name,deleted_at FROM folders ORDER BY id", null).use { f -> while (f.moveToNext()) {
-            val decksJson = JSONArray()
-            readableDatabase.rawQuery("SELECT id,name,deleted_at FROM decks WHERE folder_id=? ORDER BY id", arrayOf(f.getLong(0).toString())).use { d -> while (d.moveToNext()) {
+        fun decksJson(folder: Long?): JSONArray {
+            val decks = JSONArray()
+            readableDatabase.rawQuery("SELECT id,name,deleted_at FROM decks WHERE folder_id ${if (folder == null) "IS NULL" else "=?"} ORDER BY id", if (folder == null) null else arrayOf(folder.toString())).use { d -> while (d.moveToNext()) {
                 val cardsJson = JSONArray()
                 readableDatabase.rawQuery("SELECT id,word,translation,reps,interval_days,ease,due,deleted_at,learning_step FROM cards WHERE deck_id=? ORDER BY id", arrayOf(d.getLong(0).toString())).use { c -> while (c.moveToNext()) {
                     cardsJson.put(JSONObject().put("oldId", c.getLong(0)).put("word", c.getString(1)).put("translation", c.getString(2)).put("reps", c.getInt(3)).put("interval", c.getInt(4)).put("ease", c.getDouble(5)).put("due", c.getLong(6)).put("deletedAt", c.getLong(7)).put("learningStep", c.getInt(8)))
                 } }
-                decksJson.put(JSONObject().put("name", d.getString(1)).put("deletedAt", d.getLong(2)).put("cards", cardsJson))
+                decks.put(JSONObject().put("name", d.getString(1)).put("deletedAt", d.getLong(2)).put("cards", cardsJson))
             } }
-            foldersJson.put(JSONObject().put("name", f.getString(1)).put("deletedAt", f.getLong(2)).put("decks", decksJson))
+            return decks
+        }
+        readableDatabase.rawQuery("SELECT id,name,deleted_at FROM folders ORDER BY id", null).use { f -> while (f.moveToNext()) {
+            foldersJson.put(JSONObject().put("name", f.getString(1)).put("deletedAt", f.getLong(2)).put("decks", decksJson(f.getLong(0))))
         } }
         val events = JSONArray()
         readableDatabase.rawQuery("SELECT card_id,day,correct FROM events ORDER BY id", null).use { c -> while (c.moveToNext()) events.put(JSONObject().put("card", if (c.isNull(0)) JSONObject.NULL else c.getLong(0)).put("day", c.getLong(1)).put("correct", c.getInt(2))) }
-        return root.put("folders", foldersJson).put("events", events).toString(2)
+        return root.put("folders", foldersJson).put("unfiledDecks", decksJson(null)).put("events", events).toString(2)
     }
 
     /** Invalid input rolls back the entire replacement. */
     fun restore(text: String) {
         val root = JSONObject(text)
         val version = root.getInt("version")
-        require(version in 1..2) { "Неподдерживаемая версия копии" }
+        require(version in 1..3) { "Неподдерживаемая версия копии" }
         val folders = root.getJSONArray("folders")
+        val unfiled = if (version == 3) root.getJSONArray("unfiledDecks") else JSONArray()
         val events = root.getJSONArray("events")
         val db = writableDatabase
         db.beginTransaction()
         try {
             require(SyncLocalStore(this).boundAccount() == null) { "Синхронизированную базу нельзя заменить из резервной копии" }
-            db.execSQL("DELETE FROM review_undo"); db.execSQL("DELETE FROM events"); db.execSQL("DELETE FROM folders")
+            db.execSQL("DELETE FROM review_undo"); db.execSQL("DELETE FROM events"); db.execSQL("DELETE FROM decks"); db.execSQL("DELETE FROM folders")
             val ids = mutableMapOf<Long, Long>()
             fun deleted(obj: JSONObject): Long = if (version == 1) 0 else obj.getLong("deletedAt").also { require(it >= 0) }
-            for (f in 0 until folders.length()) {
-                val folder = folders.getJSONObject(f)
-                val folderId = addFolder(folder.getString("name"))
-                val decks = folder.getJSONArray("decks")
+            fun restoreDecks(folderId: Long?, decks: JSONArray) {
                 for (d in 0 until decks.length()) {
                     val deck = decks.getJSONObject(d)
                     val deckId = addDeck(folderId, deck.getString("name"))
@@ -233,8 +256,14 @@ class Store(context: Context, databaseName: String = "slovarik.db") : SQLiteOpen
                     }
                     db.execSQL("UPDATE decks SET deleted_at=? WHERE id=?", arrayOf(deleted(deck), deckId))
                 }
+            }
+            for (f in 0 until folders.length()) {
+                val folder = folders.getJSONObject(f)
+                val folderId = addFolder(folder.getString("name"))
+                restoreDecks(folderId, folder.getJSONArray("decks"))
                 db.execSQL("UPDATE folders SET deleted_at=? WHERE id=?", arrayOf(deleted(folder), folderId))
             }
+            restoreDecks(null, unfiled)
             for (i in 0 until events.length()) {
                 val event = events.getJSONObject(i)
                 require(event.has("card") && event.getLong("day") >= 0 && event.getInt("correct") in 0..1)

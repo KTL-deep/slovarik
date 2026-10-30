@@ -1,7 +1,7 @@
 package com.slovarik.app
 
 /** Wire format: name, deletedAt (folders/decks/cards, including soft trash);
- * folder/deck/card (parent UUID), word,translation; reps,interval,ease,due,step;
+ * folder (nullable for unfiled decks), deck/card (parent UUID), word,translation; reps,interval,ease,due,step;
  * or day,correct and nullable card for events. IDs are UUID/32-hex; progress
  * IDs are "progress-" plus the card ID. Fixtures may use shorter IDs.
  * settings carry key/value, match carries deck UUID/seconds (best time), undo carries

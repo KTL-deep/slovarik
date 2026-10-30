@@ -11,7 +11,6 @@
     <string name="main_new_deck">Новая колода</string>
     <string name="main_new_card">Новая карточка</string>
     <string name="main_new_deck_add">+ Новая колода</string>
-    <string name="main_new_deck_here">Новая колода в «%1$s»</string>
     <string name="main_add">+ Добавить</string>
     <string name="main_add_card">Добавить карточку</string>
     <string name="main_choose_deck">Выберите колоду для занятий</string>
@@ -64,8 +63,8 @@
     <string name="main_import_hint">Каждая строка: слово&lt;TAB&gt;перевод или слово;перевод. CSV с запятыми также поддерживается.</string>
     <string name="main_paste_words">Вставьте слова</string>
     <string name="main_name">Название</string>
-    <string name="main_auto_folder">Будет создана папка «Мои слова» для новой колоды.</string>
-    <string name="main_deck_folder">Папка для колоды</string>
+    <string name="main_deck_folder">Папка для колоды (необязательно)</string>
+    <string name="main_unfiled">Без папки</string>
     <string name="main_select_folder">Выберите папку</string>
     <string name="main_folder_value">Папка: %1$s</string>
     <string name="main_folder_hint">Соберите колоды по темам</string>

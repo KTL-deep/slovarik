@@ -29,8 +29,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -43,8 +41,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.core.graphics.drawable.toBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -54,11 +51,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.delay
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private val Ink = Night
 
@@ -84,15 +83,6 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         store = Store(this)
-        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        if (!prefs.getBoolean("seeded", false)) {
-            if (!store.hasFolders()) {
-                val folder = store.addFolder(getString(R.string.main_seed_folder))
-                val deck = store.addDeck(folder, getString(R.string.main_seed_deck))
-                listOf("hello" to "привет", "journey" to "путешествие", "curious" to "любопытный", "garden" to "сад", "bright" to "яркий", "remember" to "помнить").forEach { (word, translation) -> store.addCard(deck, word, translation) }
-            }
-            prefs.edit().putBoolean("seeded", true).apply()
-        }
         UserProfileBridge.migrateLegacy(this, store)
         UserProfileBridge.project(this, store)
         if (resources.configuration.locales[0].language != InterfaceLanguage.current(this)) {
@@ -154,9 +144,9 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
     var language by remember { mutableStateOf(preferences.getString("language", "en") ?: "en") }
     var target by remember { mutableStateOf(preferences.getString("target", "ru") ?: "ru") }
     var randomDirection by remember { mutableStateOf(preferences.getBoolean("randomDirection", false)) }
-    var deckFolderLocked by remember { mutableStateOf(false) }
     val update: () -> Unit = { tick++; Unit }
     val folders = remember(tick) { store.folders() }
+    val dragDrop = rememberDeckDragDropState()
     val availableUndo = remember(tick) { store.lastReviewUndo() }
     val notify: (String) -> Unit = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
     val message: (Int) -> Unit = { notify(context.getString(it)) }
@@ -189,7 +179,8 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
             tick++
             val activeFolders = store.folders()
             folder = folder?.let { previous -> activeFolders.firstOrNull { it.id == previous.id } }
-            deck = deck?.let { previous -> folder?.let { store.decks(it.id).firstOrNull { item -> item.id == previous.id } } }
+            deck = deck?.let { previous -> store.allDecks().firstOrNull { it.id == previous.id } }
+            if (deck != null) folder = activeFolders.firstOrNull { it.id == deck?.folderId }
             if ((page == "decks" && folder == null) || (page in listOf("cards", "study", "practice") && deck == null)) page = "home"
         }
     }
@@ -212,11 +203,10 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
             val restored = availableUndo?.let { store.undoLastReview(it.eventId) }
             if (restored == null) message(R.string.main_undo_unavailable)
             else {
-                val parent = store.folders().firstOrNull { f -> store.decks(f.id).any { it.id == restored.deckId } }
-                val restoredDeck = parent?.let { store.decks(it.id).firstOrNull { d -> d.id == restored.deckId } }
-                if (parent != null && restoredDeck != null) {
+                val restoredDeck = store.allDecks().firstOrNull { it.id == restored.deckId }
+                if (restoredDeck != null) {
                     cloudSync?.setStudyActive(true)
-                    folder = parent; deck = restoredDeck; forcedStudyCardId = restored.id; studyMode = "Карточки"; page = "study"
+                    folder = store.folders().firstOrNull { it.id == restoredDeck.folderId }; deck = restoredDeck; forcedStudyCardId = restored.id; studyMode = "Карточки"; page = "study"
                 }
                 message(R.string.main_undo_done)
             }
@@ -228,8 +218,7 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
             when (dialog) {
                 "folder" -> if (input.isNotBlank()) store.addFolder(input)
                 "deck" -> if (input.isNotBlank()) {
-                    val parentId = selectedFolderId?.takeIf { id -> folders.any { it.id == id } }
-                        ?: if (folders.isEmpty()) store.addFolder(context.getString(R.string.main_seed_folder)) else error(context.getString(R.string.main_select_folder))
+                    val parentId = selectedFolderId?.also { id -> require(folders.any { it.id == id }) { context.getString(R.string.main_select_folder) } }
                     store.addDeck(parentId, input)
                 }
                 "card" -> if (input.isNotBlank() && cardTranslation.isNotBlank()) store.addCard(requireNotNull(deck).id, input, cardTranslation)
@@ -268,7 +257,7 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
     }
     val screen = PageSnapshot(page, folder, deck, if (page == "study") forcedStudyCardId else null, if (page == "study" || page == "practice") studyMode else "Карточки")
     BackHandler(enabled = dialog.isEmpty() && page != "home") {
-        page = when (page) { "study", "practice" -> "cards"; "cards" -> "decks"; "trash" -> "settings"; else -> "home" }
+        page = when (page) { "study", "practice" -> "cards"; "cards" -> if (folder == null) "home" else "decks"; "trash" -> "settings"; else -> "home" }
     }
     MaterialTheme(colorScheme = darkColorScheme(primary = Lavender, onPrimary = Night, secondary = Mint, background = Night, surface = Color(0xFF242424), onSurface = Color.White)) {
         Scaffold(containerColor = Night) { padding ->
@@ -303,11 +292,12 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                 Column(Modifier.fillMaxSize()) {
                 when (shown.name) {
                     "home" -> {
-                         val allDecks = folders.flatMap { store.decks(it.id) }
-                         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                          val allDecks = remember(tick) { store.allDecks() }
+                          DisposableEffect(dragDrop) { onDispose { dragDrop.cancel() } }
+                          Box(dragDrop.overlay(Modifier.fillMaxSize())) {
+                          Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                               Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                  val icon = remember(context) { context.packageManager.getApplicationIcon(context.packageName).toBitmap(96, 96).asImageBitmap() }
-                                  Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(32.dp).testTag("home-app-icon"))
+                                   AppLogo(Modifier.size(32.dp).testTag("home-app-icon"))
                                   Text(stringResource(R.string.main_app_name), fontSize = 24.sp, fontWeight = FontWeight.Bold)
                               }
                              Spacer(Modifier.height(20.dp))
@@ -316,19 +306,27 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                              Spacer(Modifier.height(10.dp))
                              Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                  allDecks.forEach { item ->
-                                         DeckTile(item.name, progressLabel(store.cards(item.id)), { deck = item; folder = folders.firstOrNull { it.id == item.folderId }; page = "cards" }, onDelete = { pendingDeck = item; dialog = "deleteDeck" }, modifier = Modifier.width(170.dp).heightIn(min = 172.dp).testTag("home-deck-${item.id}"))
+                                          DeckTile(item.name, progressLabel(store.cards(item.id)), { deck = item; folder = folders.firstOrNull { it.id == item.folderId }; page = "cards" }, onDelete = { pendingDeck = item; dialog = "deleteDeck" }, modifier = Modifier.width(170.dp).heightIn(min = 172.dp).testTag("home-deck-${item.id}").graphicsLayer { alpha = if (dragDrop.draggingId == item.id) .35f else 1f }, dragModifier = dragDrop.source(item.id) { source, target ->
+                                              try { store.moveDeck(source, target); if (deck?.id == source) { deck = deck?.copy(folderId = target); folder = folders.firstOrNull { it.id == target } }; update() }
+                                              catch (error: Exception) { notify(context.getString(R.string.main_move_error, error.message)) }
+                                          })
                                   }
-                                   DeckTile(stringResource(R.string.main_new_deck), stringResource(R.string.main_add), { deckFolderLocked = false; input = ""; selectedFolderId = folders.firstOrNull()?.id; dialog = "deck" }, modifier = Modifier.width(170.dp).heightIn(min = 172.dp))
+                                    DeckTile(stringResource(R.string.main_new_deck), stringResource(R.string.main_add), { input = ""; selectedFolderId = null; dialog = "deck" }, modifier = Modifier.width(170.dp).heightIn(min = 172.dp))
                              }
                              Spacer(Modifier.height(20.dp))
                               Text(stringResource(R.string.main_my_folders), fontSize = 21.sp, fontWeight = FontWeight.Bold)
                              Spacer(Modifier.height(10.dp))
                              Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                   folders.forEach { item -> FolderTile(item.name, progressLabel(store.decks(item.id).flatMap { store.cards(it.id) }), { folder = item; page = "decks" }, onDelete = { pendingFolder = item; dialog = "deleteFolder" }, modifier = Modifier.testTag("home-folder-${item.id}")) }
+                                    folders.forEach { item -> FolderTile(item.name, progressLabel(store.decks(item.id).flatMap { store.cards(it.id) }), { folder = item; page = "decks" }, onDelete = { pendingFolder = item; dialog = "deleteFolder" }, modifier = Modifier.testTag("home-folder-${item.id}").then(dragDrop.target(item.id)), highlighted = dragDrop.hovering == item.id) }
                                   FolderTile(stringResource(R.string.main_new_folder), stringResource(R.string.main_add), { input = ""; dialog = "folder" })
                              }
-                             Spacer(Modifier.height(18.dp))
-                        }
+                              Spacer(Modifier.height(18.dp))
+                         }
+                          val draggingDeck = allDecks.firstOrNull { it.id == dragDrop.draggingId }
+                          if (draggingDeck != null) DeckTile(draggingDeck.name, progressLabel(store.cards(draggingDeck.id)), onClick = {}, modifier = Modifier
+                              .offset { IntOffset((dragDrop.previewWindowTopLeft.x - dragDrop.overlayWindowTopLeft.x).roundToInt(), (dragDrop.previewWindowTopLeft.y - dragDrop.overlayWindowTopLeft.y).roundToInt()) }
+                              .width(170.dp).heightIn(min = 172.dp).graphicsLayer { alpha = .92f }.testTag("drag-deck-preview"))
+                          }
                     }
                      "decks" -> {
                           Back(stringResource(R.string.main_folders)) { page = "home" }
@@ -337,11 +335,11 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                           SearchField(search) { search = it }
                           Spacer(Modifier.height(10.dp))
                           if (shownFolder != null) Button(
-                              onClick = { deckFolderLocked = true; input = ""; selectedFolderId = shownFolder.id; dialog = "deck" },
+                               onClick = { input = ""; selectedFolderId = null; dialog = "deck" },
                               modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
                               colors = ButtonDefaults.buttonColors(containerColor = Lemon, contentColor = Ink)
                            ) {
-                               Text(stringResource(R.string.main_new_deck_here, shownFolder.name), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                                Text(stringResource(R.string.main_new_deck), fontSize = 17.sp, fontWeight = FontWeight.Bold)
                            }
                            if (shownFolder != null) TextButton(onClick = { dialog = "addExistingDeck" }, modifier = Modifier.fillMaxWidth().testTag("add-existing-deck")) {
                                Text(stringResource(R.string.main_add_existing_deck))
@@ -356,7 +354,7 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                     }
                     "cards" -> if (currentDeck != null) {
                          Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                         Back(shownFolder?.name.orEmpty()) { page = "decks" }
+                          Back(shownFolder?.name ?: stringResource(R.string.main_my_decks)) { page = if (shownFolder == null) "home" else "decks" }
                            Heading(currentDeck.name, "")
                          val cards = store.cards(currentDeck.id)
                          val due = cards.count { it.review.due <= System.currentTimeMillis() }
@@ -470,24 +468,17 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                             "deck" -> {
                                 EditorField(input, { input = it }, stringResource(R.string.main_name))
                                 Spacer(Modifier.height(12.dp))
-                                when {
-                                    deckFolderLocked -> {
-                                        val locked = folders.firstOrNull { it.id == selectedFolderId }
-                                         if (locked != null) Surface(color = Color(0xFF353535), shape = RoundedCornerShape(14.dp)) {
-                                             Text(stringResource(R.string.main_folder_value, locked.name), Modifier.padding(horizontal = 14.dp, vertical = 10.dp), color = Color.White, fontSize = 13.sp)
-                                        } else Text(stringResource(R.string.main_select_folder), color = Coral, fontSize = 12.sp)
-                                    }
-                                     folders.isEmpty() -> Text(stringResource(R.string.main_auto_folder), color = Color.White.copy(alpha = .7f), fontSize = 12.sp)
-                                    else -> {
-                                         Text(stringResource(R.string.main_deck_folder), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                                        folders.forEach { choice ->
-                                            Row(Modifier.fillMaxWidth().clickable { selectedFolderId = choice.id }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                RadioButton(selected = selectedFolderId == choice.id, onClick = { selectedFolderId = choice.id })
-                                                 Text(choice.name, color = Color.White)
-                                            }
-                                        }
-                                    }
-                                }
+                                 Text(stringResource(R.string.main_deck_folder), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
+                                 Row(Modifier.fillMaxWidth().clickable { selectedFolderId = null }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                     RadioButton(selected = selectedFolderId == null, onClick = { selectedFolderId = null })
+                                     Text(stringResource(R.string.main_unfiled), color = Color.White)
+                                 }
+                                 folders.forEach { choice ->
+                                     Row(Modifier.fillMaxWidth().clickable { selectedFolderId = choice.id }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                         RadioButton(selected = selectedFolderId == choice.id, onClick = { selectedFolderId = choice.id })
+                                         Text(choice.name, color = Color.White)
+                                     }
+                                 }
                             }
                             else -> {
                                 EditorField(input, { input = it }, stringResource(R.string.main_word))
@@ -547,13 +538,20 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
             val moving = dialog == "moveDeck"
             val destination = folder
             val targetFolders = folders.filter { it.id != pendingDeck?.folderId }
-            val existingDecks = if (destination == null) emptyList() else folders.filter { it.id != destination.id }
-                .flatMap { source -> store.decks(source.id).map { it to source } }
+            val existingDecks = if (destination == null) emptyList() else store.allDecks().filter { it.folderId != destination.id }
             AlertDialog(onDismissRequest = { dialog = "" },
                 title = { Text(stringResource(if (moving) R.string.main_move_deck else R.string.main_add_existing_deck)) },
                 text = { Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
-                    if (if (moving) targetFolders.isEmpty() else existingDecks.isEmpty()) Text(stringResource(if (moving) R.string.main_no_other_folders else R.string.main_no_other_decks))
+                    if (!moving && existingDecks.isEmpty()) Text(stringResource(R.string.main_no_other_decks))
                     if (moving) {
+                         if (pendingDeck?.folderId != null) TextButton(onClick = {
+                             try {
+                                 val source = requireNotNull(pendingDeck)
+                                 store.moveDeck(source.id, null)
+                                 deck = source.copy(folderId = null); folder = null
+                                 dialog = ""; pendingDeck = null; update()
+                             } catch (error: Exception) { notify(context.getString(R.string.main_move_error, error.message)); update() }
+                         }, modifier = Modifier.fillMaxWidth().testTag("move-target-unfiled")) { Text(stringResource(R.string.main_unfiled)) }
                         targetFolders.forEach { choice -> TextButton(onClick = {
                             try {
                                 val source = requireNotNull(pendingDeck)
@@ -564,13 +562,13 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
                             } catch (error: Exception) { notify(context.getString(R.string.main_move_error, error.message)); update() }
                         }, modifier = Modifier.fillMaxWidth().testTag("move-target-${choice.id}")) { Text(choice.name) } }
                     } else {
-                        existingDecks.forEach { (candidate, source) -> TextButton(onClick = {
+                         existingDecks.forEach { candidate -> TextButton(onClick = {
                             try {
                                 store.moveDeck(candidate.id, requireNotNull(destination).id)
                                 dialog = ""; update()
                             } catch (error: Exception) { notify(context.getString(R.string.main_move_error, error.message)); update() }
                         }, modifier = Modifier.fillMaxWidth().testTag("existing-deck-${candidate.id}")) {
-                            Text(stringResource(R.string.main_deck_from_folder, candidate.name, source.name))
+                             Text(stringResource(R.string.main_deck_from_folder, candidate.name, folders.firstOrNull { it.id == candidate.folderId }?.name ?: context.getString(R.string.main_unfiled)))
                         } }
                     }
                 } }, confirmButton = {}, dismissButton = { TextButton(onClick = { dialog = "" }) { Text(stringResource(R.string.main_cancel)) } })
@@ -676,10 +674,10 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
     TextField(value, onChange, modifier = Modifier.fillMaxWidth(), placeholder = { Text(stringResource(R.string.main_search), color = Color.White.copy(alpha = .7f)) }, leadingIcon = { AppIcon("search", color = Color.White) }, singleLine = true,
         shape = RoundedCornerShape(50.dp), colors = TextFieldDefaults.colors(focusedContainerColor = Color(0xFF353535), unfocusedContainerColor = Color(0xFF353535), focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, cursorColor = Lavender))
 }
-@Composable private fun FolderTile(title: String, subtitle: String, onClick: () -> Unit, onDelete: (() -> Unit)? = null, modifier: Modifier = Modifier) {
+@Composable private fun FolderTile(title: String, subtitle: String, onClick: () -> Unit, onDelete: (() -> Unit)? = null, modifier: Modifier = Modifier, highlighted: Boolean = false) {
     val (source, motion) = rememberTileMotion()
     val deleteDescription = stringResource(R.string.main_delete_folder_accessibility, title)
-    Card(colors = CardDefaults.cardColors(containerColor = Mint, contentColor = Ink), shape = RoundedCornerShape(26.dp), modifier = motion.width(170.dp).heightIn(min = 172.dp).then(modifier).then(if (onDelete != null) Modifier.combinedClickable(interactionSource = source, indication = null, onClick = onClick, onLongClick = onDelete, onLongClickLabel = deleteDescription) else Modifier.clickable(interactionSource = source, indication = null, onClick = onClick))) {
+    Card(colors = CardDefaults.cardColors(containerColor = if (highlighted) Lavender else Mint, contentColor = Ink), shape = RoundedCornerShape(26.dp), modifier = motion.width(170.dp).heightIn(min = 172.dp).then(modifier).clickable(interactionSource = source, indication = null, onClick = onClick)) {
         Box {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
                 Surface(color = Color.White.copy(alpha = .52f), shape = RoundedCornerShape(50.dp)) { Box(Modifier.size(47.dp), contentAlignment = Alignment.Center) { AppIcon("folder", color = Ink) } }
@@ -693,13 +691,13 @@ internal fun App(store: Store, speak: (String, String) -> Unit, cloudSync: Cloud
         }
     }
 }
-@Composable private fun DeckTile(title: String, subtitle: String, onClick: () -> Unit, onDelete: (() -> Unit)? = null, modifier: Modifier = Modifier.fillMaxWidth().heightIn(min = 142.dp)) {
+@Composable private fun DeckTile(title: String, subtitle: String, onClick: () -> Unit, onDelete: (() -> Unit)? = null, modifier: Modifier = Modifier.fillMaxWidth().heightIn(min = 142.dp), dragModifier: Modifier = Modifier) {
     val (source, motion) = rememberTileMotion()
     val deleteDescription = stringResource(R.string.main_delete_deck_accessibility, title)
-    Card(colors = CardDefaults.cardColors(containerColor = Lemon, contentColor = Ink), shape = RoundedCornerShape(26.dp), modifier = motion.then(modifier).then(if (onDelete != null) Modifier.combinedClickable(interactionSource = source, indication = null, onClick = onClick, onLongClick = onDelete, onLongClickLabel = deleteDescription) else Modifier.clickable(interactionSource = source, indication = null, onClick = onClick))) {
+    Card(colors = CardDefaults.cardColors(containerColor = Lemon, contentColor = Ink), shape = RoundedCornerShape(26.dp), modifier = motion.then(modifier).clickable(interactionSource = source, indication = null, onClick = onClick).then(dragModifier)) {
         Box {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                AppIcon("folder", color = Ink)
+                AppIcon("deck", color = Ink)
                 Spacer(Modifier.height(12.dp))
                 Text(title, fontSize = 20.sp, lineHeight = 23.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(subtitle.replace(" · ", "\n"), fontSize = 13.sp, color = Ink.copy(alpha = .65f))

@@ -189,7 +189,7 @@ class SyncLocalStore(private val store: Store) {
     private fun samePayload(a: SyncRecord, b: SyncRecord): Boolean = a.deleted == b.deleted && (a.deleted || equalValue(a.fields, b.fields))
 
     private fun parentOf(r: SyncRecord): Pair<String, String>? = if (r.deleted) null else when (r.kind) {
-        "decks" -> "folders" to (r.fields.getValue("folder") as String)
+        "decks" -> (r.fields["folder"] as? String)?.let { "folders" to it }
         "cards" -> "decks" to (r.fields.getValue("deck") as String)
         "progress" -> "cards" to (r.fields.getValue("card") as String)
         "events" -> (r.fields["card"] as? String)?.let { "cards" to it }
@@ -308,7 +308,7 @@ class SyncLocalStore(private val store: Store) {
         val values: List<Any?>
         when (table) {
             "folders" -> { columns = listOf("name", "deleted_at"); values = listOf(str("name"), num("deletedAt")) }
-            "decks" -> { columns = listOf("folder_id", "name", "deleted_at"); values = listOf(parent("folders", "folder"), str("name"), num("deletedAt")) }
+            "decks" -> { columns = listOf("folder_id", "name", "deleted_at"); values = listOf(f["folder"]?.let { parent("folders", "folder") }, str("name"), num("deletedAt")) }
             "cards" -> { columns = listOf("deck_id", "word", "translation", "deleted_at"); values = listOf(parent("decks", "deck"), str("word"), str("translation"), num("deletedAt")) }
             else -> { columns = listOf("card_id", "day", "correct"); values = listOf(f["card"]?.let { parent("cards", "card") }, num("day"), num("correct")) }
         }
@@ -347,7 +347,7 @@ class SyncLocalStore(private val store: Store) {
         fun ease() = require((f["ease"] as? Number)?.toDouble()?.let { it.isFinite() && it >= 1.3 && it <= 1e6 } == true) { "Invalid ease" }
         when (r.kind) {
             "folders" -> { text("name", 4096); integer("deletedAt") }
-            "decks" -> { text("folder", 256); text("name", 4096); integer("deletedAt") }
+            "decks" -> { require(f["folder"] == null || (f["folder"] as? String)?.let { it.isNotBlank() && it.length <= 256 } == true); text("name", 4096); integer("deletedAt") }
             "cards" -> { text("deck", 256); text("word", 65536); text("translation", 65536); integer("deletedAt") }
             "progress" -> { text("card", 256); require(r.id == "progress-${f["card"]}"); integer("reps", Int.MAX_VALUE.toLong()); integer("interval", Int.MAX_VALUE.toLong()); integer("due"); integer("step", 2); ease() }
             "events" -> { require(f.containsKey("card") && (f["card"] == null || f["card"] is String && (f["card"] as String).length <= 256)); integer("day"); integer("correct", 1) }
@@ -367,7 +367,7 @@ class SyncLocalStore(private val store: Store) {
         if (deleted || localId == null && kind !in listOf("settings")) return SyncRecord(uuid, kind, stamp, device, true, emptyMap())
         val fields: Map<String, Any?> = when (kind) {
             "folders" -> row("SELECT name,deleted_at FROM folders WHERE id=?", localId) { c -> mapOf("name" to c.getString(0), "deletedAt" to c.getLong(1)) }
-            "decks" -> row("SELECT r.uuid,d.name,d.deleted_at FROM decks d JOIN sync_records r ON r.kind='folders' AND r.local_id=d.folder_id WHERE d.id=?", localId) { c -> mapOf("folder" to c.getString(0), "name" to c.getString(1), "deletedAt" to c.getLong(2)) }
+            "decks" -> row("SELECT r.uuid,d.name,d.deleted_at FROM decks d LEFT JOIN sync_records r ON r.kind='folders' AND r.local_id=d.folder_id WHERE d.id=?", localId) { c -> mapOf("folder" to if (c.isNull(0)) null else c.getString(0), "name" to c.getString(1), "deletedAt" to c.getLong(2)) }
             "cards" -> row("SELECT r.uuid,c.word,c.translation,c.deleted_at FROM cards c JOIN sync_records r ON r.kind='decks' AND r.local_id=c.deck_id WHERE c.id=?", localId) { c -> mapOf("deck" to c.getString(0), "word" to c.getString(1), "translation" to c.getString(2), "deletedAt" to c.getLong(3)) }
             "progress" -> row("SELECT r.uuid,c.reps,c.interval_days,c.ease,c.due,c.learning_step FROM cards c JOIN sync_records r ON r.kind='cards' AND r.local_id=c.id WHERE c.id=?", localId) { c -> mapOf("card" to c.getString(0), "reps" to c.getInt(1), "interval" to c.getInt(2), "ease" to c.getDouble(3), "due" to c.getLong(4), "step" to c.getInt(5)) }
             "settings" -> { val key = UserProfileStore.settingKeys.single { UserProfileStore.settingUuid(it) == uuid }; mapOf("key" to key, "value" to requireNotNull(UserProfileStore(store).setting(key))) }

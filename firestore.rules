@@ -33,7 +33,7 @@ service cloud.firestore {
         (d.kind == 'folders' && f.keys().hasOnly(['name', 'deletedAt'])
           && text(f.name, 4096) && deletedAt(f))
         || (d.kind == 'decks' && f.keys().hasOnly(['folder', 'name', 'deletedAt'])
-          && identity(f.folder) && text(f.name, 4096) && deletedAt(f))
+          && (f.folder == null || identity(f.folder)) && text(f.name, 4096) && deletedAt(f))
         || (d.kind == 'cards' && f.keys().hasOnly(['deck', 'word', 'translation', 'deletedAt'])
           && identity(f.deck) && text(f.word, 65536) && text(f.translation, 65536) && deletedAt(f))
         || (d.kind == 'progress' && f.keys().hasOnly(['card', 'reps', 'interval', 'ease', 'due', 'step'])

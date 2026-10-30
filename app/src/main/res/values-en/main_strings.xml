@@ -11,7 +11,6 @@
     <string name="main_new_deck">New deck</string>
     <string name="main_new_card">New card</string>
     <string name="main_new_deck_add">+ New deck</string>
-    <string name="main_new_deck_here">New deck in “%1$s”</string>
     <string name="main_add">+ Add</string>
     <string name="main_add_card">Add card</string>
     <string name="main_choose_deck">Choose a deck to study</string>
@@ -64,8 +63,8 @@
     <string name="main_import_hint">Each line: word&lt;TAB&gt;translation or word;translation. Comma-separated CSV is also supported.</string>
     <string name="main_paste_words">Paste words</string>
     <string name="main_name">Name</string>
-    <string name="main_auto_folder">A “My words” folder will be created for this deck.</string>
-    <string name="main_deck_folder">Folder for deck</string>
+    <string name="main_deck_folder">Folder for deck (optional)</string>
+    <string name="main_unfiled">No folder</string>
     <string name="main_select_folder">Choose a folder</string>
     <string name="main_folder_value">Folder: %1$s</string>
     <string name="main_folder_hint">Group decks by topic</string>

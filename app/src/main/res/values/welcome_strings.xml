@@ -1,0 +1,9 @@
+<resources>
+    <string name="welcome_tagline">Слова становятся своими</string>
+    <string name="welcome_choices">Начните по-своему</string>
+    <string name="welcome_model_hint">Необязательно · EN ↔ RU · ~235 МБ</string>
+    <string name="welcome_details">Подробнее о моделях</string>
+    <string name="welcome_sync_title">Google-синхронизация</string>
+    <string name="welcome_sync_hint">Необязательно · сохраните слова и прогресс на других устройствах</string>
+    <string name="welcome_online_disclosure">Без офлайн-моделей при нажатии «Перевести» введённый текст отправляется в MyMemory по HTTPS. Вход в Google для этого не нужен.</string>
+</resources>

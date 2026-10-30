@@ -49,6 +49,79 @@ class StoreDeviceTest {
         assertTrue(restored.review.due > System.currentTimeMillis())
     }
 
+    @Test fun unfiledDecksMoveTrashAndBackupWithoutCreatingFolders() {
+        val deck = store.addDeck(null, "Unfiled")
+        val card = store.addCard(deck, "word", "translation")
+        val event = store.review(requireNotNull(store.getCard(card)), 4)
+        assertFalse(store.hasFolders())
+        assertEquals(listOf(deck), store.decks(null).map { it.id })
+        assertEquals(listOf(deck), store.allDecks().map { it.id })
+        val folder = store.addFolder("Folder")
+        store.moveDeck(deck, folder)
+        assertTrue(store.decks(null).isEmpty())
+        store.moveDeck(deck, null)
+        store.deleteFolder(folder)
+        assertEquals(deck, store.allDecks().single().id)
+        assertEquals(event.eventId, store.lastReviewUndo()?.eventId)
+        store.deleteDeck(deck)
+        val trashed = store.trashItems().single { it.kind == TrashKind.DECK && it.id == deck }
+        assertEquals("", trashed.subtitle)
+        store.restoreTrash(TrashKind.DECK, deck)
+        val backup = store.backup()
+        assertEquals(3, JSONObject(backup).getInt("version"))
+        assertEquals(1, JSONObject(backup).getJSONArray("unfiledDecks").length())
+        store.restore(backup)
+        assertEquals("word", store.cards(store.decks(null).single().id).single().word)
+        assertEquals(1, store.stats().reviews)
+        assertFalse(JSONObject(store.backup()).getJSONArray("events").getJSONObject(0).isNull("card"))
+    }
+
+    @Test fun v4MigrationPreservesRowsSyncIdentityAndForeignKeys() {
+        val card = seed()
+        val event = store.review(card, 4)
+        val folder = store.folders().single().id
+        val sync = SyncLocalStore(store)
+        val profile = UserProfileStore(store)
+        profile.setSetting("interface_language", "en")
+        profile.setMatchRecord(card.deckId, 18)
+        assertTrue(sync.bindAccount("migration-account"))
+        val identities = store.readableDatabase.rawQuery("SELECT kind,uuid,local_id,stamp,device,deleted,dirty FROM sync_records ORDER BY kind,uuid", null).use { c ->
+            buildList { while (c.moveToNext()) add((0 until 7).map { if (c.isNull(it)) "NULL" else c.getString(it) }) }
+        }
+        assertTrue(sync.pending().isNotEmpty())
+        store.close()
+        // Construct an actual v4 deck schema, leaving all other populated v4 tables intact.
+        SQLiteDatabase.openDatabase(context.getDatabasePath(testDatabase).path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.setForeignKeyConstraintsEnabled(false)
+            val triggers = db.rawQuery("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name", null).use { c ->
+                buildList { while (c.moveToNext()) add(c.getString(0) to c.getString(1)) }
+            }
+            triggers.forEach { db.execSQL("DROP TRIGGER \"${it.first}\"") }
+            db.execSQL("CREATE TABLE decks_v4(id INTEGER PRIMARY KEY, folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE, name TEXT NOT NULL, deleted_at INTEGER NOT NULL DEFAULT 0)")
+            db.execSQL("INSERT INTO decks_v4 SELECT * FROM decks")
+            db.execSQL("DROP TABLE decks")
+            db.execSQL("ALTER TABLE decks_v4 RENAME TO decks")
+            triggers.forEach { db.execSQL(it.second) }
+            db.version = 4
+        }
+        store = Store(context, testDatabase)
+        assertEquals(folder, store.decks(folder).single().folderId)
+        assertEquals(card.id, store.getCard(card.id)?.id)
+        assertEquals(event.eventId, store.lastReviewUndo()?.eventId)
+        assertEquals(1, store.stats().reviews)
+        assertEquals("migration-account", SyncLocalStore(store).boundAccount())
+        assertEquals("en", UserProfileStore(store).setting("interface_language"))
+        assertEquals(18, UserProfileStore(store).matchRecord(card.deckId))
+        val after = store.readableDatabase.rawQuery("SELECT kind,uuid,local_id,stamp,device,deleted,dirty FROM sync_records ORDER BY kind,uuid", null).use { c ->
+            buildList { while (c.moveToNext()) add((0 until 7).map { if (c.isNull(it)) "NULL" else c.getString(it) }) }
+        }
+        assertEquals(identities, after)
+        store.readableDatabase.rawQuery("PRAGMA foreign_key_check", null).use { assertFalse(it.moveToFirst()) }
+        store.readableDatabase.rawQuery("PRAGMA foreign_keys", null).use { it.moveToFirst(); assertEquals(1, it.getInt(0)) }
+        store.addDeck(null, "new")
+        assertThrows(Exception::class.java) { store.writableDatabase.execSQL("INSERT INTO decks(folder_id,name) VALUES(999999,'invalid')") }
+    }
+
     @Test fun malformedBackupRollsBackWithoutLosingCurrentData() {
         seed()
         val before = store.backup()
@@ -221,7 +294,7 @@ class StoreDeviceTest {
         assertEquals(1, store.stats().reviews)
     }
 
-    @Test fun v1RestoreAndV2TrashedLearningRoundTrip() {
+    @Test fun v1AndV2RestoreAndTrashedLearningRoundTrip() {
         val card = seed()
         val v1 = JSONObject(store.backup()).put("version", 1)
         val folder = v1.getJSONArray("folders").getJSONObject(0)
@@ -232,6 +305,10 @@ class StoreDeviceTest {
         oldCard.remove("deletedAt"); oldCard.remove("learningStep")
         store.restore(v1.toString())
         assertEquals(0, store.cards(store.decks(store.folders().single().id).single().id).single().review.learningStep)
+        val v2 = JSONObject(store.backup()).put("version", 2)
+        v2.remove("unfiledDecks")
+        store.restore(v2.toString())
+        assertEquals(1, store.decks(store.folders().single().id).size)
         val current = store.cards(store.decks(store.folders().single().id).single().id).single()
         store.review(current, 1)
         store.deleteCard(current.id)

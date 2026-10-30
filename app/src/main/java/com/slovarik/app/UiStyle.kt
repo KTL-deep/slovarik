@@ -1,15 +1,20 @@
 package com.slovarik.app
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.drawable.toBitmap
 
 internal val Night = Color(0xFF111111)
 internal val Lavender = Color(0xFFB399FA)
@@ -17,6 +22,16 @@ internal val Mint = Color(0xFFC3D7C2)
 internal val Coral = Color(0xFFFF6269)
 internal val Lemon = Color(0xFFEFFF9C)
 internal val Muted = Color(0xFFAAAAAA)
+
+@Composable
+internal fun AppLogo(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val image = remember(context) {
+        (context.getDrawable(R.mipmap.ic_launcher) ?: context.getDrawable(R.drawable.ic_launcher_foreground))
+            ?.toBitmap(192, 192)?.asImageBitmap()
+    }
+    if (image != null) Image(bitmap = image, contentDescription = null, modifier = modifier)
+}
 
 @Composable
 internal fun AppIcon(name: String, modifier: Modifier = Modifier, color: Color = Color.White) {
@@ -30,6 +45,13 @@ internal fun AppIcon(name: String, modifier: Modifier = Modifier, color: Color =
             "folder" -> {
                 val path = Path().apply { moveTo(w*.12f,w*.32f); lineTo(w*.38f,w*.32f); lineTo(w*.47f,w*.42f); lineTo(w*.88f,w*.42f); lineTo(w*.83f,w*.78f); lineTo(w*.14f,w*.78f); close() }
                 drawPath(path, color, style = Stroke(stroke, cap = StrokeCap.Round))
+            }
+            "deck" -> {
+                drawRoundRect(color, topLeft = point(.13f, .24f), size = androidx.compose.ui.geometry.Size(w*.67f, w*.52f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(w*.06f), style = Stroke(stroke))
+                drawLine(color, point(.20f,.32f), point(.20f,.18f), stroke, cap = StrokeCap.Round)
+                drawLine(color, point(.20f,.18f), point(.82f,.18f), stroke, cap = StrokeCap.Round)
+                drawLine(color, point(.28f,.45f), point(.66f,.45f), stroke, cap = StrokeCap.Round)
+                drawLine(color, point(.28f,.55f), point(.51f,.55f), stroke, cap = StrokeCap.Round)
             }
             "home" -> {
                 val path = Path().apply { moveTo(w*.13f,w*.46f); lineTo(w*.5f,w*.16f); lineTo(w*.87f,w*.46f); moveTo(w*.22f,w*.43f); lineTo(w*.22f,w*.83f); lineTo(w*.78f,w*.83f); lineTo(w*.78f,w*.43f); moveTo(w*.43f,w*.83f); lineTo(w*.43f,w*.59f); lineTo(w*.57f,w*.59f); lineTo(w*.57f,w*.83f) }

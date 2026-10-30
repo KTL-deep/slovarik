@@ -21,6 +21,16 @@ test('owner can create/read/list own records', async () => {
   await assertSucceeds(getDoc(ref(db)));
   await assertSucceeds(getDocs(collection(db, 'users/alice/records')));
 });
+test('unfiled decks accept null, retain UUID parents, reject invalid parents and stay private', async () => {
+  const db = env.authenticatedContext('alice').firestore();
+  const deck = (folder, stamp) => record({ kind: 'decks', stamp, fields: { folder, name: 'Words', deletedAt: 0 } });
+  await assertSucceeds(setDoc(ref(db), deck(null, 1)));
+  await assertSucceeds(setDoc(ref(db), deck(device, 2)));
+  await assertSucceeds(setDoc(ref(db), deck(null, 3)));
+  for (const folder of ['not-a-uuid', 1, false]) await assertFails(setDoc(ref(db), deck(folder, 4)));
+  await assertFails(getDoc(ref(env.authenticatedContext('bob').firestore())));
+  await assertFails(setDoc(ref(env.authenticatedContext('bob').firestore()), deck(null, 4)));
+});
 test('anonymous and another account cannot access records', async () => {
   const alice = env.authenticatedContext('alice').firestore();
   await assertSucceeds(setDoc(ref(alice), record()));

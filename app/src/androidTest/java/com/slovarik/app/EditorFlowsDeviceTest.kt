@@ -59,9 +59,9 @@ class EditorFlowsDeviceTest {
         assertTrue(folder.id != otherFolder)
 
         compose.onNodeWithText("Editor folder").performScrollTo().performClick()
-        compose.onNodeWithText("Новая колода в «Editor folder»").performClick()
-        compose.onNode(hasText("Папка: Editor folder") or hasText("Folder: Editor folder")).assertExists()
+        compose.onNode(hasText("Новая колода") or hasText("New deck")).performClick()
         fields()[0].performTextInput("Editor deck")
+        compose.onNode(hasText("Editor folder") and hasAnyAncestor(isDialog())).performClick()
         save()
         val deck = store.decks(folder.id).single()
         assertEquals("Editor deck", deck.name)

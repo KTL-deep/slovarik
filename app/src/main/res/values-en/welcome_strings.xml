@@ -1,0 +1,9 @@
+<resources>
+    <string name="welcome_tagline">Make every word yours</string>
+    <string name="welcome_choices">Start your way</string>
+    <string name="welcome_model_hint">Optional · EN ↔ RU · ~235 MB</string>
+    <string name="welcome_details">About the models</string>
+    <string name="welcome_sync_title">Google sync</string>
+    <string name="welcome_sync_hint">Optional · keep your words and progress across devices</string>
+    <string name="welcome_online_disclosure">Without offline models, pressing Translate sends entered text to MyMemory over HTTPS. No Google sign-in needed.</string>
+</resources>
